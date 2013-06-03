@@ -1,0 +1,115 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="3.5" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <ProjectGuid>{A5B59C52-DA1D-4840-B02E-8354A9C220F2}</ProjectGuid>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <OutputType>Library</OutputType>
+    <AssemblyName>GuruxAMI.Server</AssemblyName>
+    <TargetFrameworkVersion>v3.5</TargetFrameworkVersion>
+    <WarningLevel>4</WarningLevel>
+    <SignAssembly>false</SignAssembly>
+    <AssemblyOriginatorKeyFile>
+    </AssemblyOriginatorKeyFile>
+    <RootNamespace>GuruxAMI.Server</RootNamespace>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Platform)' == 'AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <OutputPath>bin\Debug\</OutputPath>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+    <OutputPath>bin\Release\</OutputPath>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DefineConstants>TRACE;DEBUG</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="ServiceStack, Version=3.9.45.0, Culture=neutral, processorArchitecture=MSIL">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>..\GuruxAMI.Common\packages\ServiceStack.3.9.45\lib\net35\ServiceStack.dll</HintPath>
+    </Reference>
+    <Reference Include="ServiceStack.Common, Version=3.9.45.0, Culture=neutral, processorArchitecture=MSIL">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>..\GuruxAMI.Common\packages\ServiceStack.Common.3.9.45\lib\net35\ServiceStack.Common.dll</HintPath>
+    </Reference>
+    <Reference Include="ServiceStack.Interfaces, Version=3.9.45.0, Culture=neutral, processorArchitecture=MSIL">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>..\GuruxAMI.Common\packages\ServiceStack.Common.3.9.45\lib\net35\ServiceStack.Interfaces.dll</HintPath>
+    </Reference>
+    <Reference Include="ServiceStack.OrmLite, Version=3.9.45.0, Culture=neutral, processorArchitecture=MSIL">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>..\GuruxAMI.Common\packages\ServiceStack.OrmLite.MySql.3.9.45\lib\ServiceStack.OrmLite.dll</HintPath>
+    </Reference>
+    <Reference Include="ServiceStack.ServiceInterface, Version=3.9.45.0, Culture=neutral, processorArchitecture=MSIL">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>..\GuruxAMI.Common\packages\ServiceStack.3.9.45\lib\net35\ServiceStack.ServiceInterface.dll</HintPath>
+    </Reference>
+    <Reference Include="System" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Core">
+      <RequiredTargetFramework>3.5</RequiredTargetFramework>
+    </Reference>
+    <Reference Include="System.Runtime.Serialization">
+      <RequiredTargetFramework>3.0</RequiredTargetFramework>
+    </Reference>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Xml" />
+    <Reference Include="System.Xml.Linq">
+      <RequiredTargetFramework>3.5</RequiredTargetFramework>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="GuruxAMI.Server\GXAppHost.cs" />
+    <Compile Include="GuruxAMI.Server\GXEvent.cs" />
+    <Compile Include="GuruxAMI.Server\GXPrefixNamingStrategy.cs" />
+    <Compile Include="GuruxAMI.Server\GXSession.cs" />
+    <Compile Include="GuruxAMI.Server\GXWebAppHost.cs" />
+    <Compile Include="GuruxAMI.Service\GXTraceService.cs" />
+    <Compile Include="GuruxAMI.Service\GXAmiDataCollectorParameter.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="GuruxAMI.Server\AppHost.cs" />
+    <Compile Include="GuruxAMI.Server\GXBasicAuthProvider.cs" />
+    <Compile Include="GuruxAMI.Server\GXDBService.cs" />
+    <Compile Include="GuruxAMI.Server\GXServiceRunner.cs" />
+    <Compile Include="GuruxAMI.Service\GXEventsService.cs" />
+    <Compile Include="GuruxAMI.Service\GXDataCollectorService.cs" />
+    <Compile Include="GuruxAMI.Service\GXManagementService.cs" />
+    <Compile Include="GuruxAMI.Service\GXActionService.cs" />
+    <Compile Include="GuruxAMI.Service\GXDeviceGroupService.cs" />
+    <Compile Include="GuruxAMI.Service\GXDeviceService.cs" />
+    <Compile Include="GuruxAMI.Service\GXDeviceTemplateService.cs" />
+    <Compile Include="GuruxAMI.Service\GXErrorService.cs" />
+    <Compile Include="GuruxAMI.Service\GXScheduleService.cs" />
+    <Compile Include="GuruxAMI.Service\GXTaskService.cs" />
+    <Compile Include="GuruxAMI.Service\GXUserGroupService.cs" />
+    <Compile Include="GuruxAMI.Service\GXUserService.cs" />
+    <Compile Include="GuruxAMI.Service\Settings.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\GXCom\Gurux.Common\Development\Gurux.Common_2008.csproj">
+      <Project>{749652D4-4779-4869-AD81-5211A661CD1B}</Project>
+      <Name>Gurux.Common_2008</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\GXCom\Gurux.Communication\Development\Gurux.Communication_2008.csproj">
+      <Project>{BA05698E-DDAA-4D04-A6F0-6BC571805179}</Project>
+      <Name>Gurux.Communication_2008</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\GXCom\Gurux.Device\Development\Gurux.Device_2008.csproj">
+      <Project>{C4BB249E-A56A-4675-B406-864280D77BF3}</Project>
+      <Name>Gurux.Device_2008</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\GuruxAMI.Common\GuruxAMI.Common_2008.csproj">
+      <Project>{613F7B0E-2FCD-4DC6-9A64-E4D9E4BE56C4}</Project>
+      <Name>GuruxAMI.Common_2008</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>
