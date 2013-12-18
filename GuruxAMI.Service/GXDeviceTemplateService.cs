@@ -138,7 +138,7 @@ namespace GuruxAMI.Service
                 dt.UpdateInterval = device.UpdateInterval;
                 dt.WaitTime = device.WaitTime;
                 dt.ResendCount = device.ResendCount;
-                dt.Added = DateTime.Now;
+                dt.Added = DateTime.Now.ToUniversalTime();
                 List<GXAmiMediaType> list = new List<GXAmiMediaType>();
                 List<string> medias = new List<string>(Gurux.Communication.GXClient.GetAvailableMedias());
                 foreach (GXMediaType it in device.AllowedMediaTypes)
@@ -401,11 +401,11 @@ namespace GuruxAMI.Service
                     }
                     if (request.UserGroups != null)
                     {
-                        foreach (GXAmiUserGroup ug in request.UserGroups)
+                        foreach (long ugId in request.UserGroups)
                         {
                             GXAmiUserGroupDeviceTemplate it = new GXAmiUserGroupDeviceTemplate();
                             it.DeviceTemplateID = DeviceTemplateID;
-                            it.UserGroupID = ug.Id;
+                            it.UserGroupID = ugId;
                             Db.Insert(it);
                         }
                     }
@@ -663,7 +663,7 @@ namespace GuruxAMI.Service
         /// </summary>
         /// <param name="request"></param>
         /// <returns></returns>
-		public GXDeviceTemplateDeleteResponse Delete(GXDeviceTemplateDeleteRequest request)
+		public GXDeviceTemplateDeleteResponse Post(GXDeviceTemplateDeleteRequest request)
 		{
             List<GXEventsItem> events = new List<GXEventsItem>();
             IAuthSession s = this.GetSession(false);
@@ -684,7 +684,7 @@ namespace GuruxAMI.Service
                     throw new ArgumentException("Access denied.");
                 }
                 GXAmiDeviceTemplate dt = Db.GetById<GXAmiDeviceTemplate>(it);
-                if (request.Permamently)
+                if (request.Permanently)
                 {
                     Db.DeleteById<GXAmiDeviceTemplate>(it);
                 }

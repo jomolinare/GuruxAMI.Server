@@ -45,22 +45,11 @@ using System.Text;
 namespace GuruxAMI.Service
 {
     /// <summary>
-    /// Service handles Task functionality.
+    /// Service handles trace functionality.
     /// </summary>
     [Authenticate]
     internal class GXTraceService : ServiceStack.ServiceInterface.Service
-    {
-        /// <summary>
-        /// Can user, add or remove users.
-        /// </summary>
-        /// <param name="s"></param>
-        /// <returns></returns>
-        static public bool IsLimitedAccess(IAuthSession s)
-        {
-            int value = Convert.ToInt32(s.Roles[0]);
-            return (value & (int)UserAccessRights.LimitedAccess) == (int)UserAccessRights.LimitedAccess;
-        }
-
+    {        
         /// <summary>
         /// Update trace level for selected devices or Data Collectors.
         /// </summary>
@@ -199,7 +188,7 @@ namespace GuruxAMI.Service
         /// </summary>
         /// <param name="request"></param>
         /// <returns></returns>
-        public GXTracesResponse Get(GXTracesRequest request)
+        public GXTracesResponse Post(GXTracesRequest request)
         {
             List<GXAmiTrace> list = new List<GXAmiTrace>();
             if (request.DataCollectors != null)
@@ -228,7 +217,7 @@ namespace GuruxAMI.Service
         /// </summary>
         /// <param name="request"></param>
         /// <returns></returns>
-        public GXTraceDeleteResponse Delete(GXTraceDeleteRequest request)
+        public GXTraceDeleteResponse Post(GXTraceDeleteRequest request)
         {
             List<GXEventsItem> events = new List<GXEventsItem>();
             List<GXAmiTrace> items = new List<GXAmiTrace>();

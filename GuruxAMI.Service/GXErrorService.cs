@@ -30,13 +30,14 @@
 // Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
 //---------------------------------------------------------------------------
 
-using System;
+using GuruxAMI.Common.Messages;
+using ServiceStack.ServiceInterface;
+using GuruxAMI.Common;
 using System.Collections.Generic;
 using System.Data;
-using GuruxAMI.Common;
-using GuruxAMI.Common.Messages;
 using ServiceStack.OrmLite;
-using ServiceStack.ServiceInterface;
+using System;
+using System.Linq;
 using ServiceStack.ServiceInterface.Auth;
 using GuruxAMI.Server;
 
@@ -75,11 +76,198 @@ namespace GuruxAMI.Service
             return new GXErrorUpdateResponse();
 		}
 		public GXErrorsResponse Post(GXErrorsRequest request)
-		{
-            return new GXErrorsResponse((GuruxAMI.Common.GXAmiSystemError[]) null);
+		{            
+            if (request.System)
+            {
+                List<string> Filter = new List<string>();
+                string query = "SELECT * FROM " + GuruxAMI.Server.AppHost.GetTableName<GXAmiSystemError>(Db);
+                if (request.UserIDs != null && request.UserIDs.Length != 0)
+                {
+                    bool first = true;
+                    query += "WHERE UserID IN (";
+                    foreach (long it in request.UserIDs)
+                    {
+                        if (!first)
+                        {
+                            query += ", ";
+                        }
+                        query += it.ToString();
+                        first = false;
+                    }
+                    query += ")";
+                }
+                else if (request.UserGroupIDs != null && request.UserGroupIDs.Length != 0)
+                {
+                    string query2 = string.Format("SELECT DISTINCT {0}.ID FROM {0} INNER JOIN {1} ON {0}.ID = {1}.UserID WHERE UserGroupID IN (",
+                    GuruxAMI.Server.AppHost.GetTableName<GXAmiUser>(Db),
+                    GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroupUser>(Db));
+                    bool first = true;
+                    foreach (ulong it in request.UserGroupIDs)
+                    {
+                        if (!first)
+                        {
+                            query2 += ", ";
+                        }
+                        query2 += it.ToString();
+                        first = false;
+                    }
+                    first = true;
+                    List<long> userIDs = Db.Select<long>(query2);
+                    first = true;
+                    query += "WHERE UserID IN (";
+                    foreach (long it in userIDs)
+                    {
+                        if (!first)
+                        {
+                            query += ", ";
+                        }
+                        query += it.ToString();
+                        first = false;
+                    }
+                    query += ")";
+                }
+                List<GXAmiSystemError> errors = Db.Select<GXAmiSystemError>(query);
+                //Get errors by range.
+                if (request.Index != 0 || request.Count != 0)
+                {
+                    if (request.Count == 0 || request.Index + request.Count > errors.Count)
+                    {
+                        request.Count = errors.Count - request.Index;
+                    }
+                    errors.RemoveRange(0, request.Index);
+                    var limitUsers = errors.Take(request.Count);
+                    errors = limitUsers.ToList();
+                }
+                return new GXErrorsResponse(errors.ToArray());
+            }
+            else
+            {
+
+                List<string> Filter = new List<string>();
+                string query = "SELECT * FROM " + GuruxAMI.Server.AppHost.GetTableName<GXAmiDeviceError>(Db);
+                if (request.DeviceIDs != null && request.DeviceIDs.Length != 0)
+                {
+                    bool first = true;
+                    string str = "TargetDeviceID IN (";
+                    foreach (long it in request.DeviceIDs)
+                    {
+                        if (!first)
+                        {
+                            str += ", ";
+                        }
+                        str += it.ToString();
+                        first = false;
+                    }
+                    str += ")";
+                    Filter.Add(str);
+                }
+                if (request.DeviceGroupIDs != null && request.DeviceGroupIDs.Length != 0)
+                {
+                    //query += "DeviceGroup = " + request.DeviceGroupIDs;
+                    bool first = true;
+                    string str = "TargetDeviceID IN (";
+                    foreach (long it in request.DeviceIDs)
+                    {
+                        if (!first)
+                        {
+                            str += ", ";
+                        }
+                        str += it.ToString();
+                        first = false;
+                    }
+                    str += ")";
+                    Filter.Add(str);
+                }
+                if (Filter.Count != 0)
+                {
+                    query += "WHERE ";
+                    query += string.Join(" AND ", Filter.ToArray());
+                }
+                List<GXAmiDeviceError> errors = Db.Select<GXAmiDeviceError>(query);
+                //Get errors by range.
+                if (request.Index != 0 || request.Count != 0)
+                {
+                    if (request.Count == 0 || request.Index + request.Count > errors.Count)
+                    {
+                        request.Count = errors.Count - request.Index;
+                    }
+                    errors.RemoveRange(0, request.Index);
+                    var limitUsers = errors.Take(request.Count);
+                    errors = limitUsers.ToList();
+                }                
+                return new GXErrorsResponse(errors.ToArray());
+            }
 		}
-		public GXErrorDeleteResponse Delete(GXErrorDeleteRequest request)
+		public GXErrorDeleteResponse Post(GXErrorDeleteRequest request)
 		{
+            IAuthSession s = this.GetSession(false);
+            int id = Convert.ToInt32(s.Id);
+            if (id == 0)
+            {
+                throw new ArgumentException("Remove failed. Invalid session ID.");
+            }
+            if (!GuruxAMI.Server.GXBasicAuthProvider.CanUserEdit(s))
+            {
+                throw new ArgumentException("Remove not allowed.");
+            }
+            List<GXEventsItem> events = new List<GXEventsItem>();
+            List<GXAmiDeviceError> errors = new List<GXAmiDeviceError>();
+            List<GXAmiSystemError> sysErrors = new List<GXAmiSystemError>();
+            bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
+            //Remove system errors.
+            if (request.System || request.SystemErrorIDs != null)
+            {
+                foreach (uint it in request.SystemErrorIDs)
+                {
+                    if (it == 0)
+                    {
+                        throw new ArgumentException("ID is required");
+                    }
+                    sysErrors.AddRange(Db.Select<GXAmiSystemError>(p => p.Id == it));
+                }
+                foreach (GXAmiSystemError it in sysErrors)
+                {
+                    events.Add(new GXEventsItem(ActionTargets.SystemError, Actions.Remove, it));
+                }
+                Db.DeleteAll<GXAmiSystemError>(sysErrors);
+                AppHost host = this.ResolveService<AppHost>();
+                host.SetEvents(Db, this.Request, id, events);
+            }
+            else
+            {
+                //Remove device errors by ID.
+                if (request.DeviceErrorIDs != null)
+                {
+                    foreach (uint it in request.DeviceErrorIDs)
+                    {
+                        if (it == 0)
+                        {
+                            throw new ArgumentException("ID is required");
+                        }
+                        errors.AddRange(Db.Select<GXAmiDeviceError>(p => p.Id == it));
+                    }
+                }
+                //Remove device errors.
+                if (request.DeviceID != 0)
+                {
+                    errors.AddRange(Db.Select<GXAmiDeviceError>(p => p.TargetDeviceID == request.DeviceID));
+                }
+                if (errors.Count == 0)
+                {
+                    //Remove all log items.
+                    if (superAdmin)
+                    {
+                        errors.AddRange(Db.Select<GXAmiDeviceError>());
+                    }
+                }
+                foreach (GXAmiDeviceError it in errors)
+                {
+                    events.Add(new GXEventsItem(ActionTargets.DeviceError, Actions.Remove, it));
+                }
+                Db.DeleteAll<GXAmiDeviceError>(errors);
+                AppHost host = this.ResolveService<AppHost>();
+                host.SetEvents(Db, this.Request, id, events);
+            }                        
 			return new GXErrorDeleteResponse();
 		}
 	}

@@ -38,6 +38,7 @@ using System.Data;
 using ServiceStack.OrmLite;
 using System;
 using System.Xml.Linq;
+using System.Linq;
 using ServiceStack.ServiceInterface.Auth;
 using GuruxAMI.Server;
 
@@ -45,14 +46,14 @@ namespace GuruxAMI.Service
 {
     /// <summary>
     /// Service handles user functionality.
-    /// </summary>
-    [Authenticate]
+    /// </summary>    
+    [Authenticate()]
     internal class GXUserService : ServiceStack.ServiceInterface.Service
 	{
         /// <summary>
         /// Add or update new user.
-        /// </summary>
-		public GXUserUpdateResponse Put(GXUserUpdateRequest request)
+        /// </summary>		
+        public GXUserUpdateResponse Put(GXUserUpdateRequest request)
 		{
             using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
             {
@@ -68,10 +69,6 @@ namespace GuruxAMI.Service
                     {
                         throw new ArgumentException("Invalid name.");
                     }
-                    if (string.IsNullOrEmpty(it.Password))
-                    {
-                        throw new ArgumentException("Invalid Password.");
-                    }
                     //If new user
                     if (it.Id == 0)
                     {
@@ -84,7 +81,11 @@ namespace GuruxAMI.Service
                         {
                             throw new ArgumentException("Only super admin can add new super admin.");
                         }
-                        it.Added = DateTime.Now;
+                        if (string.IsNullOrEmpty(it.Password))
+                        {
+                            throw new ArgumentException("Invalid Password.");
+                        }
+                        it.Added = DateTime.Now.ToUniversalTime();
                         Db.Insert(it);
                         it.Id = Db.GetLastInsertId();
                         events.Add(new GXEventsItem(ActionTargets.User, Actions.Add, it));
@@ -122,59 +123,21 @@ namespace GuruxAMI.Service
                                 throw new ArgumentException("Access denied.");
                             }
                         }
+                        //Get Added time.
+                        GXAmiUser orig = Db.GetById<GXAmiUser>(it.Id);
+                        it.Added = orig.Added;
+                        if (string.IsNullOrEmpty(it.Password))
+                        {
+                            it.Password = orig.Password;
+                        }
                         Db.Update(it);
                         events.Add(new GXEventsItem(ActionTargets.User, Actions.Edit, it));                        
-                    }
-                    if (request.UserGroups != null)
-                    {
-                        //Add user to user group.
-                        foreach (GXAmiUserGroup ug in request.UserGroups)
-                        {
-                            if (ug.Id == 0)
-                            {
-                                Db.Insert(ug);
-                                ug.Added = DateTime.Now;
-                                ug.Id = Db.GetLastInsertId();
-                            }
-                            //Check that user have access to the group.
-                            else if (!superAdmin &&
-                                !GXUserGroupService.CanAccess(Db, adderId, ug.Id))
-                            {
-                                throw new ArgumentException("Access denied.");
-                            }
-                            GXAmiUserGroupUser g;
-                            string query = string.Format("SELECT UserID FROM " + GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroupUser>(Db) + "WHERE UserID = {0} AND UserGroupID = {1}", it.Id, ug.Id);
-                            if (Db.Select<GXAmiUser>(query).Count == 0)
-                            {
-                                g = new GXAmiUserGroupUser();
-                                g.UserID = it.Id;
-                                g.UserGroupID = ug.Id;
-                                g.Added = DateTime.Now;
-                                Db.Insert(g);
-                                events.Add(new GXEventsItem(ActionTargets.User, Actions.Edit, it));
-                                events.Add(new GXEventsItem(ActionTargets.UserGroup, Actions.Edit, ug));
-                            }
-
-                            //Add adder to user group if adder is not super admin.
-                            if (!superAdmin)
-                            {
-                                query = string.Format("SELECT UserID FROM " + GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroupUser>(Db) + " WHERE UserID = {0} AND UserGroupID = {1}", adderId, ug.Id);
-                                if (Db.Select<GXAmiUser>(query).Count == 0)
-                                {
-                                    g = new GXAmiUserGroupUser();
-                                    g.UserID = adderId;
-                                    g.UserGroupID = ug.Id;
-                                    g.Added = DateTime.Now;
-                                    Db.Insert(g);
-                                }
-                            }
-                        }
-                    }
+                    }                   
                 }
                 AppHost host = this.ResolveService<AppHost>();
                 host.SetEvents(Db, this.Request, adderId, events);
                 trans.Commit();                
-                return new GXUserUpdateResponse(request.Users, request.UserGroups);
+                return new GXUserUpdateResponse(request.Users);
             }
 
 		}
@@ -244,20 +207,34 @@ namespace GuruxAMI.Service
                 query += "))";
             }
             query += string.Format(" ORDER BY {0}.ID", GuruxAMI.Server.AppHost.GetTableName<GXAmiUser>(Db));
-            return Db.Select<GXAmiUser>(query);
+            return Db.Select<GXAmiUser>(query);           
         }
-
+        
         /// <summary>
         /// Get available users.
-        /// </summary>
-		public GXUsersResponse Post(GXUsersRequest request)
+        /// </summary>		
+        public GXUsersResponse Post(GXUsersRequest request)
 		{
             IAuthSession s = this.GetSession(false);
             List<GXAmiUser> users;
-            //Returns users who can access device.
-            if (request.DeviceID != 0)
+            //Return info from logged user;            
+            if (request.UserID == -1)
             {
-                users = null;
+                int id = Convert.ToInt32(s.Id);
+                if (id == 0)
+                {
+                    throw new ArgumentException("Failed to get information from current user. Invalid session ID.");
+                }
+                users = GetUsers(s, Db, id, 0, false, true);
+            }
+            else if (request.UserID != 0)
+            {
+                users = GetUsers(s, Db, request.UserID, 0, request.Removed, true);
+            }
+            //Returns users who can access device.
+            else if (request.DeviceID != 0)
+            {
+                throw new NotImplementedException();
             }
             //Returns users who belong to user group.
             else if (request.UserGroupID != 0)
@@ -274,6 +251,29 @@ namespace GuruxAMI.Service
                 //Return users who user can see.
                 users = GetUsers(s, Db, 0, 0, request.Removed, true);
             }
+            //Remove excluded users.
+            if (request.Excluded != null && request.Excluded.Length != 0)
+            {
+                List<long> ids = new List<long>(request.Excluded);
+                var excludeUsers = from c in users where !ids.Contains(c.Id) select c;
+                users = excludeUsers.ToList();
+            }
+            //Get users by range.
+            if (request.Index != 0 || request.Count != 0)
+            {
+                if (request.Count == 0 || request.Index + request.Count > users.Count)
+                {
+                    request.Count = users.Count - request.Index;
+                }
+                users.RemoveRange(0, request.Index);
+                var limitUsers = users.Take(request.Count);
+                users = limitUsers.ToList();
+            }
+            //Password is not give to the caller. This is a security reason.
+            foreach (GXAmiUser it in users)
+            {
+                it.Password = null;
+            }
             return new GXUsersResponse(users.ToArray());
 		}
 
@@ -282,7 +282,7 @@ namespace GuruxAMI.Service
         /// </summary>
         /// <param name="request"></param>
         /// <returns></returns>
-		public GXUserDeleteResponse Delete(GXUserDeleteRequest request)
+		public GXUserDeleteResponse Post(GXUserDeleteRequest request)
 		{
             IAuthSession s = this.GetSession(false);
             int id = Convert.ToInt32(s.Id);
@@ -322,7 +322,7 @@ namespace GuruxAMI.Service
                         }
                         string query = string.Format("UserGroupID = {0} AND UserID = {1}", gid, it);
                         GXAmiUserGroupUser item = Db.Select<GXAmiUserGroupUser>(query)[0];
-                        if (request.Permamently)
+                        if (request.Permanently)
                         {
                             Db.Delete<GXAmiUserGroupUser>(item);
                         }
@@ -343,7 +343,7 @@ namespace GuruxAMI.Service
                     {
                         throw new ArgumentException("Remove not allowed.");
                     }                    
-                    if (request.Permamently)
+                    if (request.Permanently)
                     {
                         Db.DeleteById<GXAmiUser>(it);
                     }
@@ -360,7 +360,7 @@ namespace GuruxAMI.Service
                     foreach (long gid in list)
                     {
                         GXAmiUserGroup ug = Db.QueryById<GXAmiUserGroup>(gid);
-                        if (request.Permamently)
+                        if (request.Permanently)
                         {
                             Db.DeleteById<GXAmiUserGroup>(gid);
                         }

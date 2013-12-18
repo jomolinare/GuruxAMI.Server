@@ -49,7 +49,7 @@ namespace GuruxAMI.Service
 		{
 			return new GXScheduleResponse(null);
 		}
-		public GXScheduleDeleteResponse Delete(GXScheduleDeleteRequest request)
+		public GXScheduleDeleteResponse Post(GXScheduleDeleteRequest request)
 		{
 			return new GXScheduleDeleteResponse();
 		}

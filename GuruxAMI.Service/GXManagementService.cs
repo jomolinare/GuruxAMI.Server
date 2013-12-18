@@ -128,16 +128,16 @@ namespace GuruxAMI.Service
                 }
 
                 GXAmiUserGroup ug = new GXAmiUserGroup("SuperAdmins");
-                ug.Added = DateTime.Now;
+                ug.Added = DateTime.Now.ToUniversalTime();
                 GXAmiUser user = new GXAmiUser(userName, password, UserAccessRights.SuperAdmin);
-                user.Added = DateTime.Now;
+                user.Added = DateTime.Now.ToUniversalTime();
                 user.AccessRights = UserAccessRights.SuperAdmin;
                 Db.Insert(ug);
                 ug.Id = Db.GetLastInsertId();
                 Db.Insert(user);
                 user.Id = Db.GetLastInsertId();
                 GXAmiUserGroupUser u = new GXAmiUserGroupUser();
-                u.Added = DateTime.Now;
+                u.Added = DateTime.Now.ToUniversalTime();
                 u.UserID = user.Id;
                 u.UserGroupID = ug.Id;
                 Db.Insert(u);
@@ -158,13 +158,13 @@ namespace GuruxAMI.Service
             GXAmiDataCollector dc = new GXAmiDataCollector();
             dc.Guid = Guid.NewGuid();            
             dc.MAC = GetMACAddress();
-            dc.Added = DateTime.Now;
+            dc.Added = DateTime.Now.ToUniversalTime();
             Db.Insert(dc);
             dc.Id = (ulong)Db.GetLastInsertId();
             return dc;
         }
 
-        static void DropTables(IDbConnection Db)
+        public static void DropTables(IDbConnection Db)
         {
             Db.DropTable<GXAmiTrace>();
             Db.DropTable<GXAmiTraceData>();

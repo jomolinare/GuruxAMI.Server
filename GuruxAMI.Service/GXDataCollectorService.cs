@@ -39,6 +39,7 @@ using ServiceStack.OrmLite;
 using ServiceStack.ServiceInterface;
 using ServiceStack.ServiceInterface.Auth;
 using GuruxAMI.Server;
+using System.Linq;
 
 namespace GuruxAMI.Service
 {
@@ -75,6 +76,7 @@ namespace GuruxAMI.Service
                             if (collector.Id == 0)
                             {
                                 collector.Guid = Guid.NewGuid();
+                                collector.Added = DateTime.Now.ToUniversalTime();
                                 Db.Insert(collector);
                                 collector.Id = (ulong)Db.GetLastInsertId();
                                 events.Add(new GXEventsItem(ActionTargets.DataCollector, Actions.Add, collector));
@@ -150,7 +152,7 @@ namespace GuruxAMI.Service
                         collectors = new GXAmiDataCollector[] { it };
                         it.Guid = Guid.NewGuid();
                         s.UserAuthName = it.Guid.ToString();
-                        it.LastRequestTimeStamp = it.Added = DateTime.Now;
+                        it.LastRequestTimeStamp = it.Added = DateTime.Now.ToUniversalTime();
                         it.IP = lastIP;
                         it.UnAssigned = true;
                         if (request.MacAddress != null)
@@ -201,7 +203,7 @@ namespace GuruxAMI.Service
                             collectors = new GXAmiDataCollector[] { it };
                             it.Guid = Guid.NewGuid();
                             s.UserAuthName = it.Guid.ToString();
-                            it.LastRequestTimeStamp = it.Added = DateTime.Now;
+                            it.LastRequestTimeStamp = it.Added = DateTime.Now.ToUniversalTime();
                             it.IP = lastIP;
                             it.UnAssigned = true;
                             if (request.MacAddress != null)
@@ -240,7 +242,7 @@ namespace GuruxAMI.Service
             return mac.ToString();
         }
 
-        static public List<GXAmiDataCollector> GetDataCollectorsByUser(IAuthSession s, IDbConnection Db, long userId, long userGroupId)
+        static public List<GXAmiDataCollector> GetDataCollectorsByUser(IAuthSession s, IDbConnection Db, long userId, long userGroupId, bool removed)
         {
             string id = s.Id;
             bool admin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
@@ -272,16 +274,16 @@ namespace GuruxAMI.Service
                 {
                     Filter.Add("UserGroupID = " + userGroupId.ToString());
                 }
-            }
-            else
+            }            
+            if (!removed)
             {
-                Filter.Add("Removed IS NULL");
+                Filter.Add(GuruxAMI.Server.AppHost.GetTableName<GXAmiDataCollector>(Db) + ".Removed IS NULL");
             }
             if (Filter.Count != 0)
             {
                 query += "WHERE ";
                 query += string.Join(" AND ", Filter.ToArray());
-            }
+            }            
             return Db.Select<GXAmiDataCollector>(query);
         }
 
@@ -294,7 +296,7 @@ namespace GuruxAMI.Service
             return Db.Select<GXAmiDataCollectorDevice>(query).Count != 0;
         }
 
-        static public List<GXAmiDataCollector> GetDataCollectorsByDevice(IAuthSession s, IDbConnection Db, ulong deviceID, ulong deviceGroupId)
+        static public List<GXAmiDataCollector> GetDataCollectorsByDevice(IAuthSession s, IDbConnection Db, ulong deviceID, ulong deviceGroupId, bool removed)
         {
             string id = s.Id;
             bool admin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
@@ -336,7 +338,7 @@ namespace GuruxAMI.Service
                     Filter.Add("DeviceGroupID = " + deviceGroupId.ToString());
                 }
             }
-            else
+            if (!removed)            
             {
                 Filter.Add("Removed IS NULL");
             }
@@ -359,8 +361,12 @@ namespace GuruxAMI.Service
             List<GXAmiDataCollector> list = new List<GXAmiDataCollector>();
             if (long.TryParse(s.Id, out id))
             {
+                if (request.DataCollectorId != 0)
+                {
+                    list = Db.Select<GXAmiDataCollector>(q => q.Id == request.DataCollectorId);
+                }
                 //Return all unassigned data controllers.
-                if (request.UnAssigned)
+                else if (request.UnAssigned)
                 {
                     string query = string.Format("SELECT {0}.* FROM {0} LEFT JOIN {1} ON {0}.ID = DataCollectorID WHERE Removed IS NULL AND DataCollectorID IS NULL",
                         GuruxAMI.Server.AppHost.GetTableName<GXAmiDataCollector>(Db),
@@ -370,7 +376,7 @@ namespace GuruxAMI.Service
                 //Return all data controllers that Device can access.
                 else if (request.DeviceId != 0)
                 {
-                    list = GetDataCollectorsByDevice(s, Db, request.DeviceId, 0);
+                    list = GetDataCollectorsByDevice(s, Db, request.DeviceId, 0, request.Removed);
                 }
                 //Return all data controllers by mac address.
                 else if (request.MacAddress != null)
@@ -382,19 +388,38 @@ namespace GuruxAMI.Service
                     list = Db.Select<GXAmiDataCollector>(q => q.IP == request.IPAddress);
                 }
                 else //Return all data contollers that user can access.
-                {
-                    list = GetDataCollectorsByUser(s, Db, request.UserId, 0);
+                {                    
+                    list = GetDataCollectorsByUser(s, Db, request.UserId, 0, request.Removed);
                 }
             }
             else //DC asks available DCs.
             {
                 list = Db.Select<GXAmiDataCollector>(q => q.Guid == new Guid(s.UserAuthName));
             }
+
+            //Remove excluded data collectors.
+            if (request.Excluded != null && request.Excluded.Length != 0)
+            {
+                List<ulong> ids = new List<ulong>(request.Excluded);
+                var excludeUserGroups = from c in list where !ids.Contains(c.Id) select c;
+                list = excludeUserGroups.ToList();
+            }
+            //Get data collectors by range.
+            if (request.Index != 0 || request.Count != 0)
+            {
+                if (request.Count == 0 || request.Index + request.Count > list.Count)
+                {
+                    request.Count = list.Count - request.Index;
+                }
+                list.RemoveRange(0, request.Index);
+                var limitUserGroups = list.Take(request.Count);
+                list = limitUserGroups.ToList();
+            }
             return new GXDataCollectorsResponse(list.ToArray());
         }
 
-        public GXDataCollectorDeleteResponse Delete(GXDataCollectorDeleteRequest request)
-        {
+        public GXDataCollectorDeleteResponse Post(GXDataCollectorDeleteRequest request)
+        {            
             IAuthSession s = this.GetSession(false);
             long id = 0;
             List<GXAmiDataCollector> list = new List<GXAmiDataCollector>();
@@ -409,13 +434,13 @@ namespace GuruxAMI.Service
             }
             List<GXEventsItem> events = new List<GXEventsItem>();
             bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
-            if (request.DataControllerIDs != null)
+            if (request.DataCollectorIDs != null)
             {
                 //TODO: check that user can't remove DC that he do not have access.
-                foreach (ulong it in request.DataControllerIDs)
+                foreach (ulong it in request.DataCollectorIDs)
                 {
                     List<GXAmiDataCollector> item = Db.Select<GXAmiDataCollector>(q => q.Id == it);
-                    if (request.Permamently)
+                    if (request.Permanently)
                     {
                         Db.Delete(item[0]);
                     }
@@ -428,11 +453,11 @@ namespace GuruxAMI.Service
                         else
                         {
                             item[0].Removed = DateTime.Now;
-                            Db.Update(item[0]);
+                            Db.UpdateOnly(item[0], p => p.Removed, p => p.Id == it);
                         }
                     }
                     events.Add(new GXEventsItem(ActionTargets.DataCollector, Actions.Remove, item[0]));
-                }
+                }                
             }
             AppHost host = this.ResolveService<AppHost>();
             host.SetEvents(Db, this.Request, id, events);

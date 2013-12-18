@@ -38,6 +38,7 @@ using ServiceStack.ServiceHost;
 using ServiceStack.ServiceInterface;
 using ServiceStack.ServiceInterface.Auth;
 using ServiceStack.WebHost.Endpoints;
+using ServiceStack.ServiceInterface.Cors;
 
 namespace GuruxAMI.Server
 {
@@ -71,6 +72,17 @@ namespace GuruxAMI.Server
 
         public override void Configure(Container container)
         {
+            /*
+            //Permit modern browsers (e.g. Firefox) to allow sending of any REST HTTP Method
+            base.SetConfig(new EndpointHostConfig
+            {
+                GlobalResponseHeaders = {
+                    { "Access-Control-Allow-Origin", "*" },
+                    { "Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS" },
+                    { "Access-Control-Allow-Headers", "Content-Type, Authorization" },
+                },
+            });
+            */
             //Set table prefix.
             if (!string.IsNullOrEmpty(Prefix))
             {
@@ -78,7 +90,9 @@ namespace GuruxAMI.Server
             }
             container.Register<IDbConnectionFactory>(ConnectionFactory);
             container.Register<AppHost>(new AppHost());
-            //Basic Authentication is asked when connection is made.
+            //Add Cors for jQuery.
+            Plugins.Add(new CorsFeature("*", "GET, POST, DELETE, OPTIONS", "Content-Type, Authorization", false));
+            //Basic Authentication is asked when connection is made.            
             Plugins.Add(new AuthFeature(() => new AuthUserSession(), new IAuthProvider[] {
                               new GXBasicAuthProvider()}, null));
         }

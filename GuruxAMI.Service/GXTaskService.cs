@@ -41,6 +41,7 @@ using System.Xml.Linq;
 using ServiceStack.ServiceInterface.Auth;
 using GuruxAMI.Server;
 using System.Text;
+using System.Linq;
 
 namespace GuruxAMI.Service
 {
@@ -381,7 +382,7 @@ namespace GuruxAMI.Service
                     }
                     bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
                     //Get tasks by ID.
-                    if (request.TaskIDs != null)
+                    if (request.TaskIDs != null && request.TaskIDs.Length != 0)
                     {
                         foreach (ulong it in request.TaskIDs)
                         {
@@ -392,7 +393,15 @@ namespace GuruxAMI.Service
                             //Only task creator or super admin can access tasks.                    
                             if (!superAdmin)
                             {
-                                GXAmiTask task = Db.QueryById<GXAmiTask>(it);
+                                GXAmiTask task;
+                                if (request.Log)
+                                {
+                                    task = Db.QueryById<GXAmiTaskLog>(it);
+                                }
+                                else
+                                {
+                                    task = Db.QueryById<GXAmiTask>(it);
+                                }
                                 //If task is removed.
                                 if (task != null)
                                 {
@@ -414,10 +423,14 @@ namespace GuruxAMI.Service
                         }
                     }
                     //Get tasks by user ID.
-                    else if (request.UserIDs != null)
+                    else if (request.UserIDs != null && request.UserIDs.Length != 0)
                     {
                         foreach (long uid in request.UserIDs)
                         {
+                            if (uid == 0)
+                            {
+                                throw new ArgumentException("Invalid User ID.");
+                            }
                             //Only task creator or super admin can remove tasks.                    
                             if (!superAdmin)
                             {
@@ -437,10 +450,14 @@ namespace GuruxAMI.Service
                         }
                     }
                     //Get tasks by user group ID.
-                    else if (request.UserGroupIDs != null)
+                    else if (request.UserGroupIDs != null && request.UserGroupIDs.Length != 0)
                     {
                         foreach (long ugid in request.UserGroupIDs)
                         {
+                            if (ugid == 0)
+                            {
+                                throw new ArgumentException("Invalid User Group ID.");
+                            }
                             List<GXAmiUser> users = GXUserService.GetUsers(s, Db, id, ugid, false, true);
                             foreach (GXAmiUser user in users)
                             {
@@ -454,50 +471,102 @@ namespace GuruxAMI.Service
                                 }
                                 if (request.State != TaskState.All)
                                 {
-                                    list.AddRange(Db.Select<GXAmiTask>(q => q.UserID == user.Id && q.State == request.State));
+                                    if (request.Log)
+                                    {
+                                        list.AddRange(Db.Select<GXAmiTaskLog>(q => q.UserID == user.Id && q.State == request.State).ToArray());
+                                    }
+                                    else
+                                    {
+                                        list.AddRange(Db.Select<GXAmiTask>(q => q.UserID == user.Id && q.State == request.State));
+                                    }
+                                    
                                 }
                                 else
                                 {
-                                    list.AddRange(Db.Select<GXAmiTask>(q => q.UserID == user.Id));
+                                    if (request.Log)
+                                    {                                        
+                                        list.AddRange(Db.Select<GXAmiTaskLog>(q => q.UserID == user.Id).ToArray());
+                                    }
+                                    else
+                                    {
+                                        list.AddRange(Db.Select<GXAmiTask>(q => q.UserID == user.Id));
+                                    }                                    
                                 }
                             }
                         }
                     }
                     //Get tasks by device ID.
-                    else if (request.DeviceIDs != null)
-                    {
+                    else if (request.DeviceIDs != null && request.DeviceIDs.Length != 0)
+                    {                        
                         foreach (ulong dId in request.DeviceIDs)
                         {
-                            if (GXDeviceService.GetDevices(s, Db, id, 0, 0, dId, false).Count == 0)
+                            if (dId == 0)
+                            {
+                                throw new ArgumentException("Invalid Device ID.");
+                            }
+                            if (!superAdmin && GXDeviceService.GetDevices(s, Db, id, 0, 0, dId, false).Count == 0)
                             {
                                 throw new ArgumentException("Access denied.");
                             }
                             if (request.State != TaskState.All)
                             {
-                                list.AddRange(Db.Select<GXAmiTask>(q => q.TargetDeviceID == dId && q.State == request.State));
+                                if (request.Log)
+                                {
+                                    list.AddRange(Db.Select<GXAmiTaskLog>(q => q.TargetDeviceID == dId && q.State == request.State).ToArray());
+                                }
+                                else
+                                {
+                                    list.AddRange(Db.Select<GXAmiTask>(q => q.TargetDeviceID == dId && q.State == request.State));
+                                }                                
                             }
                             else
                             {
-                                list.AddRange(Db.Select<GXAmiTask>(q => q.TargetDeviceID == dId));
+                                if (request.Log)
+                                {
+                                    list.AddRange(Db.Select<GXAmiTaskLog>(q => q.TargetDeviceID == dId).ToArray());
+                                }
+                                else
+                                {
+                                    list.AddRange(Db.Select<GXAmiTask>(q => q.TargetDeviceID == dId));
+                                }                                
                             }
                         }
                     }
                     //Get tasks by device group ID.
-                    else if (request.DeviceGroupIDs != null)
+                    else if (request.DeviceGroupIDs != null && request.DeviceGroupIDs.Length != 0)
                     {
                         foreach (ulong dgId in request.DeviceGroupIDs)
                         {
-                            if (!GXDeviceGroupService.CanUserAccessDeviceGroup(Db, id, dgId))
+                            if (dgId == 0)
+                            {
+                                throw new ArgumentException("Invalid Device Group ID.");
+                            }
+                            if (!superAdmin && !GXDeviceGroupService.CanUserAccessDeviceGroup(Db, id, dgId))
                             {
                                 throw new ArgumentException("Access denied.");
                             }
                             if (request.State != TaskState.All)
                             {
-                                list.AddRange(Db.Select<GXAmiTask>(q => q.TargetID == dgId && q.State == request.State));
+                                if (request.Log)
+                                {
+                                    list.AddRange(Db.Select<GXAmiTaskLog>(q => q.TargetID == dgId && q.State == request.State).ToArray());
+                                }
+                                else
+                                {
+                                    list.AddRange(Db.Select<GXAmiTask>(q => q.TargetID == dgId && q.State == request.State));
+                                }                                
                             }
                             else
                             {
-                                list.AddRange(Db.Select<GXAmiTask>(q => q.TargetID == dgId));
+                                if (request.Log)
+                                {
+                                    list.AddRange(Db.Select<GXAmiTaskLog>(q => q.TargetID == dgId).ToArray());
+                                }
+                                else
+                                {
+                                    list.AddRange(Db.Select<GXAmiTask>(q => q.TargetID == dgId));
+                                }
+                                
                             }
                         }
                     }
@@ -507,22 +576,53 @@ namespace GuruxAMI.Service
                         {
                             if (request.State != TaskState.All)
                             {
-                                list = Db.Select<GXAmiTask>(q => q.State == request.State);
+                                if (request.Log)
+                                {
+                                    list.AddRange(Db.Select<GXAmiTaskLog>(q => q.State == request.State).ToArray());
+                                }
+                                else
+                                {
+                                    list = Db.Select<GXAmiTask>(q => q.State == request.State);
+                                }
+                                
                             }
                             else
                             {
-                                list = Db.Select<GXAmiTask>();
+                                if (request.Log)
+                                {
+                                    list.AddRange(Db.Select<GXAmiTaskLog>().ToArray());
+                                }
+                                else
+                                {
+                                    list = Db.Select<GXAmiTask>();
+                                }                                
                             }
                         }
                         else
                         {
                             if (request.State != TaskState.All)
                             {
-                                list = Db.Select<GXAmiTask>(q => q.UserID == id && q.State == request.State);
+                                if (request.Log)
+                                {
+                                    list.AddRange(Db.Select<GXAmiTaskLog>(q => q.UserID == id && q.State == request.State).ToArray());
+                                }
+                                else
+                                {
+                                    list = Db.Select<GXAmiTask>(q => q.UserID == id && q.State == request.State);
+                                }
+                                
                             }
                             else
                             {
-                                list = Db.Select<GXAmiTask>(q => q.UserID == id);
+                                if (request.Log)
+                                {
+                                    list.AddRange(Db.Select<GXAmiTaskLog>(q => q.UserID == id).ToArray());
+                                }
+                                else
+                                {
+                                    list = Db.Select<GXAmiTask>(q => q.UserID == id);
+                                }
+                                
                             }
                         }
                     }
@@ -548,6 +648,25 @@ namespace GuruxAMI.Service
                         list.AddRange(Db.Select<GXAmiTask>(q => q.DataCollectorGuid == guid));
                     }
                 }
+                //Remove excluded users.
+                if (request.Excluded != null && request.Excluded.Length != 0)
+                {
+                    List<ulong> ids = new List<ulong>(request.Excluded);
+                    var excludeUsers = from c in list where !ids.Contains(c.Id) select c;
+                    list = excludeUsers.ToList();
+                }
+                //Get users by range.
+                if (request.Index != 0 || request.Count != 0)
+                {
+                    if (request.Count == 0 || request.Index + request.Count > list.Count)
+                    {
+                        request.Count = list.Count - request.Index;
+                    }
+                    list.RemoveRange(0, request.Index);
+                    var limitUsers = list.Take(request.Count);
+                    list = limitUsers.ToList();
+                }
+
                 foreach (GXAmiTask it in list)
                 {
                     it.Data = GetData(it.Id);
@@ -576,7 +695,7 @@ namespace GuruxAMI.Service
         /// </summary>
         /// <param name="request"></param>
         /// <returns></returns>
-        public GXTaskDeleteResponse Delete(GXTaskDeleteRequest request)
+        public GXTaskDeleteResponse Post(GXTaskDeleteRequest request)
         {
             lock (Db)
             {
