@@ -31,16 +31,21 @@
 //---------------------------------------------------------------------------
 
 using GuruxAMI.Common.Messages;
-using ServiceStack.ServiceInterface;
 using GuruxAMI.Common;
 using System.Collections.Generic;
 using System.Data;
 using ServiceStack.OrmLite;
 using System;
 using System.Xml.Linq;
-using ServiceStack.ServiceInterface.Auth;
 using GuruxAMI.Server;
 using System.Linq;
+#if !SS4
+using ServiceStack.ServiceInterface;
+using ServiceStack.ServiceInterface.Auth;
+#else
+using ServiceStack;
+using ServiceStack.Auth;
+#endif
 
 namespace GuruxAMI.Service
 {
@@ -48,7 +53,11 @@ namespace GuruxAMI.Service
     /// Service handles device group functionality.
     /// </summary>
 	[Authenticate]
+#if !SS4
     internal class GXDeviceGroupService : ServiceStack.ServiceInterface.Service
+#else
+    internal class GXDeviceGroupService : ServiceStack.Service
+#endif
 	{
         /// <summary>
         /// Add or update device group.
@@ -64,36 +73,43 @@ namespace GuruxAMI.Service
             }
             long adderId = Convert.ToInt64(s.Id);
             bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
-            using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
-            {                
-                //Add new device groups           
-                foreach (GXAmiDeviceGroup it in request.Items)
+            lock (Db)
+            {
+                using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
                 {
-                    if (string.IsNullOrEmpty(it.Name))
+                    //Add new device groups           
+                    foreach (GXAmiDeviceGroup it in request.Items)
                     {
-                        throw new ArgumentException("Invalid name.");
+                        if (string.IsNullOrEmpty(it.Name))
+                        {
+                            throw new ArgumentException("Invalid name.");
+                        }
+                        //If new device group.
+                        if (it.Id == 0)
+                        {
+                            it.Id = GXAmiSettings.GetNewDeviceID(Db);
+                            it.Added = DateTime.Now.ToUniversalTime();
+                            Db.Insert(it);
+                            events.Add(new GXEventsItem(ActionTargets.DeviceGroup, Actions.Add, it));
+                        }
+                        else //Update device group.
+                        {
+                            //Get Added time.
+#if !SS4
+                            GXAmiDeviceGroup orig = Db.GetById<GXAmiDeviceGroup>(it.Id);
+#else
+                            GXAmiDeviceGroup orig = Db.SingleById<GXAmiDeviceGroup>(it.Id);
+#endif                            
+                            it.Added = orig.Added;
+                            Db.Update(it);
+                            events.Add(new GXEventsItem(ActionTargets.DeviceGroup, Actions.Edit, it));
+                        }
                     }
-                    //If new device group.
-                    if (it.Id == 0)
-                    {
-                        it.Id = GXAmiSettings.GetNewDeviceID(Db);
-                        it.Added = DateTime.Now.ToUniversalTime();
-                        Db.Insert(it);                        
-                        events.Add(new GXEventsItem(ActionTargets.DeviceGroup, Actions.Add, it));                                               
-                    }
-                    else //Update device group.
-                    {
-                        //Get Added time.
-                        GXAmiDeviceGroup orig = Db.GetById<GXAmiDeviceGroup>(it.Id);
-                        it.Added = orig.Added;
-                        Db.Update(it);
-                        events.Add(new GXEventsItem(ActionTargets.DeviceGroup, Actions.Edit, it));                                                                                        
-                    }
+                    trans.Commit();
                 }
-                AppHost host = this.ResolveService<AppHost>();
-                host.SetEvents(Db, this.Request, adderId, events);
-                trans.Commit();
-            }            
+            }
+            AppHost host = this.ResolveService<AppHost>();
+            host.SetEvents(Db, this.Request, adderId, events);
             return new GXDeviceGroupUpdateResponse(request.Items);
         }
 
@@ -112,25 +128,28 @@ namespace GuruxAMI.Service
                 throw new ArgumentException("Access denied.");
             }
             long adderId = Convert.ToInt64(s.Id);
-            bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
-            using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
+            lock (Db)
             {
-                foreach (ulong device in request.Devices)
+                bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
+                using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
                 {
-                    foreach (ulong group in request.Groups)
+                    foreach (ulong device in request.Devices)
                     {
-                        GXAmiDeviceGroupDevice it = new GXAmiDeviceGroupDevice();
-                        it.DeviceGroupID = group;
-                        it.DeviceID = device;
-                        it.Added = DateTime.Now.ToUniversalTime();
-                        Db.Insert(it);
-                        events.Add(new GXEventsItem(ActionTargets.DeviceGroup, Actions.Edit, it));
+                        foreach (ulong group in request.Groups)
+                        {
+                            GXAmiDeviceGroupDevice it = new GXAmiDeviceGroupDevice();
+                            it.DeviceGroupID = group;
+                            it.DeviceID = device;
+                            it.Added = DateTime.Now.ToUniversalTime();
+                            Db.Insert(it);
+                            events.Add(new GXEventsItem(ActionTargets.DeviceGroup, Actions.Edit, it));
+                        }
                     }
+                    trans.Commit();
                 }
-                AppHost host = this.ResolveService<AppHost>();
-                host.SetEvents(Db, this.Request, adderId, events);
-                trans.Commit();
             }
+            AppHost host = this.ResolveService<AppHost>();
+            host.SetEvents(Db, this.Request, adderId, events);
             return new GXAddDeviceToDeviceGroupResponse();
         }
 
@@ -145,26 +164,29 @@ namespace GuruxAMI.Service
             }
             long adderId = Convert.ToInt64(s.Id);
             bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
-            using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
+            lock (Db)
             {
-                foreach (ulong device in request.Devices)
+                using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
                 {
-                    foreach (ulong group in request.Groups)
+                    foreach (ulong device in request.Devices)
                     {
-                        string query = "SELECT * FROM " + GuruxAMI.Server.AppHost.GetTableName<GXAmiDeviceGroupDevice>(Db);
-                        query += string.Format("WHERE DeviceID = {0} AND DeviceGroupID = {1}", device, group);
-                        List<GXAmiDeviceGroupDevice> items = Db.Select<GXAmiDeviceGroupDevice>(query);
-                        foreach (GXAmiDeviceGroupDevice it in items)
+                        foreach (ulong group in request.Groups)
                         {
-                            Db.DeleteById<GXAmiDeviceGroupDevice>(it);
-                            events.Add(new GXEventsItem(ActionTargets.DeviceGroup, Actions.Edit, group));
-                        }                        
+                            string query = "SELECT * FROM " + GuruxAMI.Server.AppHost.GetTableName<GXAmiDeviceGroupDevice>(Db);
+                            query += string.Format("WHERE DeviceID = {0} AND DeviceGroupID = {1}", device, group);
+                            List<GXAmiDeviceGroupDevice> items = Db.Select<GXAmiDeviceGroupDevice>(query);
+                            foreach (GXAmiDeviceGroupDevice it in items)
+                            {
+                                Db.DeleteById<GXAmiDeviceGroupDevice>(it);
+                                events.Add(new GXEventsItem(ActionTargets.DeviceGroup, Actions.Edit, group));
+                            }
+                        }
                     }
+                    trans.Commit();
                 }
-                AppHost host = this.ResolveService<AppHost>();
-                host.SetEvents(Db, this.Request, adderId, events);
-                trans.Commit();
             }
+            AppHost host = this.ResolveService<AppHost>();
+            host.SetEvents(Db, this.Request, adderId, events);
             return new GXRemoveDeviceFromDeviceGroupResponse();
         }
 
@@ -179,33 +201,36 @@ namespace GuruxAMI.Service
             }
             long adderId = Convert.ToInt64(s.Id);
             bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
-            using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
+            lock (Db)
             {
-                if (request.DeviceGroups == null)
+                using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
                 {
-                    throw new ArgumentNullException("DeviceGroups is null.");
-                }
-                if (request.UserGroups == null)
-                {
-                    throw new ArgumentNullException("DeviceGroups is null.");
-                }
-
-                foreach (ulong dg in request.DeviceGroups)
-                {
-                    foreach (long ug in request.UserGroups)
+                    if (request.DeviceGroups == null)
                     {
-                        GXAmiUserGroupDeviceGroup it = new GXAmiUserGroupDeviceGroup();
-                        it.DeviceGroupID = dg;
-                        it.UserGroupID = ug;
-                        it.Added = DateTime.Now.ToUniversalTime();
-                        Db.Insert(it);
-                        events.Add(new GXEventsItem(ActionTargets.DeviceGroup, Actions.Edit, it));
+                        throw new ArgumentNullException("DeviceGroups is null.");
                     }
+                    if (request.UserGroups == null)
+                    {
+                        throw new ArgumentNullException("DeviceGroups is null.");
+                    }
+
+                    foreach (ulong dg in request.DeviceGroups)
+                    {
+                        foreach (long ug in request.UserGroups)
+                        {
+                            GXAmiUserGroupDeviceGroup it = new GXAmiUserGroupDeviceGroup();
+                            it.DeviceGroupID = dg;
+                            it.UserGroupID = ug;
+                            it.Added = DateTime.Now.ToUniversalTime();
+                            Db.Insert(it);
+                            events.Add(new GXEventsItem(ActionTargets.DeviceGroup, Actions.Edit, it));
+                        }
+                    }
+                    trans.Commit();
                 }
-                AppHost host = this.ResolveService<AppHost>();
-                host.SetEvents(Db, this.Request, adderId, events);
-                trans.Commit();
             }
+            AppHost host = this.ResolveService<AppHost>();
+            host.SetEvents(Db, this.Request, adderId, events);
             return new GXAddDeviceGroupToUserGroupResponse();
         }
 
@@ -220,26 +245,29 @@ namespace GuruxAMI.Service
             }
             long adderId = Convert.ToInt64(s.Id);
             bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
-            using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
+            lock (Db)
             {
-                foreach (ulong dg in request.DeviceGroups)
+                using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
                 {
-                    foreach (ulong ug in request.UserGroups)
+                    foreach (ulong dg in request.DeviceGroups)
                     {
-                        string query = "SELECT * FROM " + GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroupDeviceGroup>(Db);
-                        query += string.Format("WHERE DeviceGroupID = {0} AND UserGroupID = {1}", dg, ug);
-                        List<GXAmiUserGroupDeviceGroup> items = Db.Select<GXAmiUserGroupDeviceGroup>(query);
-                        foreach (GXAmiUserGroupDeviceGroup it in items)
+                        foreach (ulong ug in request.UserGroups)
                         {
-                            Db.DeleteById<GXAmiUserGroupDeviceGroup>(it.Id);
-                            events.Add(new GXEventsItem(ActionTargets.DeviceGroup, Actions.Edit, dg));
+                            string query = "SELECT * FROM " + GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroupDeviceGroup>(Db);
+                            query += string.Format("WHERE DeviceGroupID = {0} AND UserGroupID = {1}", dg, ug);
+                            List<GXAmiUserGroupDeviceGroup> items = Db.Select<GXAmiUserGroupDeviceGroup>(query);
+                            foreach (GXAmiUserGroupDeviceGroup it in items)
+                            {
+                                Db.DeleteById<GXAmiUserGroupDeviceGroup>(it.Id);
+                                events.Add(new GXEventsItem(ActionTargets.DeviceGroup, Actions.Edit, dg));
+                            }
                         }
                     }
+                    trans.Commit();
                 }
-                AppHost host = this.ResolveService<AppHost>();
-                host.SetEvents(Db, this.Request, adderId, events);
-                trans.Commit();
             }
+            AppHost host = this.ResolveService<AppHost>();
+            host.SetEvents(Db, this.Request, adderId, events);
             return new GXRemoveDeviceGroupFromUserGroupResponse();
         }
 
@@ -346,53 +374,64 @@ namespace GuruxAMI.Service
         /// </summary>
         public GXDeviceGroupResponse Post(GXDeviceGroupsRequest request)
         {
-            List<GXAmiDeviceGroup> list;
-            //Return device group to edit.
-            if (request.Id != 0)
+            lock (Db)
             {
-                list = new List<GXAmiDeviceGroup>();
-                list.Add(Db.GetById<GXAmiDeviceGroup>(request.Id));
-            }
-            //Returns the device group(s) to which the device belongs to.
-            else if (request.DeviceId != 0)
-            {
-                throw new NotImplementedException("DeviceId");
-            }
-            //Returns the device group(s) to which the user belongs to.
-            else if (request.UserId != 0)
-            {
-                list = GetDeviceGroups(request.UserId, 0, request.Removed);
-            }
-            //Returns the device group(s) to which the user group belongs to.
-            else if (request.UserGroupId != 0)
-            {
-                list = GetDeviceGroups(0, request.UserGroupId, request.Removed);
-            }
-            //Return all device groups.
-            else
-            {
-                list = GetDeviceGroups(0, 0, request.Removed);
-            }
-
-            //Remove excluded devices.
-            if (request.Excluded != null && request.Excluded.Length != 0)
-            {
-                List<ulong> ids = new List<ulong>(request.Excluded);
-                var excludeUserGroups = from c in list where !ids.Contains(c.Id) select c;
-                list = excludeUserGroups.ToList();
-            }
-            //Get devices by range.
-            if (request.Index != 0 || request.Count != 0)
-            {
-                if (request.Count == 0 || request.Index + request.Count > list.Count)
+                List<GXAmiDeviceGroup> list;
+                //Return device group to edit.
+                if (request.Id != 0)
                 {
-                    request.Count = list.Count - request.Index;
+                    list = new List<GXAmiDeviceGroup>();
+#if !SS4
+                    list.Add(Db.GetById<GXAmiDeviceGroup>(request.Id));
+#else
+                    list.Add(Db.SingleById<GXAmiDeviceGroup>(request.Id));
+#endif                    
                 }
-                list.RemoveRange(0, request.Index);
-                var limitUserGroups = list.Take(request.Count);
-                list = limitUserGroups.ToList();
+                //Returns the device group(s) to which the device belongs to.
+                else if (request.DeviceId != 0)
+                {
+                    string query = string.Format("SELECT {0}.* FROM {0} INNER JOIN {1} ON {0}.ID = {1}.DeviceGroupID WHERE DeviceID = {2}", 
+                    GuruxAMI.Server.AppHost.GetTableName<GXAmiDeviceGroup>(Db), 
+                    GuruxAMI.Server.AppHost.GetTableName<GXAmiDeviceGroupDevice>(Db),
+                    request.DeviceId);
+                    list = Db.Select<GXAmiDeviceGroup>(query);
+                }
+                //Returns the device group(s) to which the user belongs to.
+                else if (request.UserId != 0)
+                {
+                    list = GetDeviceGroups(request.UserId, 0, request.Removed);
+                }
+                //Returns the device group(s) to which the user group belongs to.
+                else if (request.UserGroupId != 0)
+                {
+                    list = GetDeviceGroups(0, request.UserGroupId, request.Removed);
+                }
+                //Return all device groups.
+                else
+                {
+                    list = GetDeviceGroups(0, 0, request.Removed);
+                }
+
+                //Remove excluded devices.
+                if (request.Excluded != null && request.Excluded.Length != 0)
+                {
+                    List<ulong> ids = new List<ulong>(request.Excluded);
+                    var excludeUserGroups = from c in list where !ids.Contains(c.Id) select c;
+                    list = excludeUserGroups.ToList();
+                }
+                //Get devices by range.
+                if (request.Index != 0 || request.Count != 0)
+                {
+                    if (request.Count == 0 || request.Index + request.Count > list.Count)
+                    {
+                        request.Count = list.Count - request.Index;
+                    }
+                    list.RemoveRange(0, request.Index);
+                    var limitUserGroups = list.Take(request.Count);
+                    list = limitUserGroups.ToList();
+                }
+                return new GXDeviceGroupResponse(list.ToArray());
             }
-            return new GXDeviceGroupResponse(list.ToArray());
         }
 
         /// <summary>
@@ -409,30 +448,37 @@ namespace GuruxAMI.Service
             {
                 throw new ArgumentException("Access denied.");
             }
-            
+
             long id = Convert.ToInt64(s.Id);
             List<GXEventsItem> events = new List<GXEventsItem>();
-            foreach (ulong it in request.DeviceGroupIDs)
+            lock (Db)
             {
-                if (it == 0)
+                foreach (ulong it in request.DeviceGroupIDs)
                 {
-                    throw new ArgumentException("ID is required");
+                    if (it == 0)
+                    {
+                        throw new ArgumentException("ID is required");
+                    }
+                    if (!superAdmin && !CanUserAccessDeviceGroup(Db, id, it))
+                    {
+                        throw new ArgumentException("Access denied.");
+                    }
+#if !SS4
+                    GXAmiDeviceGroup dg = Db.QueryById<GXAmiDeviceGroup>(it);
+#else
+                    GXAmiDeviceGroup dg = Db.SingleById<GXAmiDeviceGroup>(it);
+#endif                    
+                    if (request.Permanently)
+                    {
+                        Db.DeleteById<GXAmiDeviceGroup>(it);
+                    }
+                    else
+                    {
+                        dg.Removed = DateTime.Now.ToUniversalTime();
+                        Db.UpdateOnly(dg, p => p.Removed, p => p.Id == it);
+                    }
+                    events.Add(new GXEventsItem(ActionTargets.DeviceGroup, Actions.Remove, dg));
                 }
-                if (!superAdmin && !CanUserAccessDeviceGroup(Db, id, it))
-                {
-                    throw new ArgumentException("Access denied.");
-                }
-                GXAmiDeviceGroup dg = Db.QueryById<GXAmiDeviceGroup>(it);
-                if (request.Permanently)
-                {
-                    Db.DeleteById<GXAmiDeviceGroup>(it);
-                }
-                else
-                {
-                    dg.Removed = DateTime.Now;
-                    Db.UpdateOnly(dg, p => p.Removed, p => p.Id == it);
-                }
-                events.Add(new GXEventsItem(ActionTargets.DeviceGroup, Actions.Remove, dg));                
             }
             AppHost host = this.ResolveService<AppHost>();
             host.SetEvents(Db, this.Request, id, events);

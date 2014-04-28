@@ -31,19 +31,24 @@
 //---------------------------------------------------------------------------
 
 using Funq;
-using ServiceStack.ServiceInterface;
-using ServiceStack.ServiceInterface.Auth;
-using ServiceStack.WebHost.Endpoints;
 using System.Reflection;
 using ServiceStack.OrmLite;
 using System.Data;
-using ServiceStack.ServiceHost;
 using GuruxAMI.Common;
 using System.Collections.Generic;
 using System.Threading;
 using System;
 using GuruxAMI.Common.Messages;
 using GuruxAMI.Server;
+#if !SS4
+using ServiceStack.ServiceInterface;
+using ServiceStack.ServiceInterface.Auth;
+using ServiceStack.WebHost.Endpoints;
+using ServiceStack.ServiceHost;
+#else
+using ServiceStack;
+using ServiceStack.Auth;
+#endif
 
 namespace GuruxAMI.Service
 {
@@ -51,10 +56,23 @@ namespace GuruxAMI.Service
     /// Service handles event functionality.
     /// </summary>
 	[Authenticate]
+#if !SS4
     internal class GXEventsService : ServiceStack.ServiceInterface.Service
+#else
+    internal class GXEventsService : ServiceStack.Service
+#endif
 	{
+        /// <summary>
+        /// Stop listen events.
+        /// </summary>
+        /// <param name="request"></param>
+        /// <returns></returns>
         public GXEventsUnregisterResponse Put(GXEventsUnregisterRequest request)
-        {
+        {            
+            if (request.ListenerGuid.Equals(Guid.Empty))
+            {
+                throw new Exception("Guid is empty.");
+            }        
             Guid guid = Guid.Empty;
             IAuthSession s = this.GetSession(false);            
             long id;
@@ -67,11 +85,33 @@ namespace GuruxAMI.Service
             }
             AppHost host = this.ResolveService<AppHost>();
             host.RemoveEvent(request.ListenerGuid, request.DataCollectorGuid);
+            if (guid != Guid.Empty)
+            {
+                //Notify that DC is disconnected.
+                List<GXEventsItem> events = new List<GXEventsItem>();
+                lock (Db)
+                {
+                    GXAmiDataCollector dc = Db.Select<GXAmiDataCollector>(q => q.Guid == guid)[0];
+                    dc.State = Gurux.Device.DeviceStates.None;
+                    Db.UpdateOnly(dc, p => p.StatesAsInt, p => p.Id == dc.Id);
+                    events.Add(new GXEventsItem(ActionTargets.DataCollector, Actions.State, dc));
+                }                                
+                host.SetEvents(Db, this.Request, 0, events);
+            }
             return new GXEventsUnregisterResponse();
         }
 
+        /// <summary>
+        /// Start listen events.
+        /// </summary>
+        /// <param name="request"></param>
+        /// <returns></returns>
         public GXEventsRegisterResponse Post(GXEventsRegisterRequest request)
         {
+            if (request.SessionListener.Equals(Guid.Empty))
+            {
+                throw new Exception("Listener Guid is empty.");
+            }
             if (request.Actions == Actions.None && request.Targets == ActionTargets.None)
             {
                 return new GXEventsRegisterResponse();
@@ -85,10 +125,42 @@ namespace GuruxAMI.Service
             {
                 superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
             }
-            ulong mask = (ulong)(((int)request.Targets << 16) | (int)request.Actions);
+            else
+            {
+                if (request.DataCollectorGuid.Equals(Guid.Empty))
+                {
+                    throw new Exception("Data collector Guid is empty.");
+                }
+            }
             AppHost host = this.ResolveService<AppHost>();
-            GXEvent e1 = new GXEvent(id, superAdmin, guid, mask);
-            host.AddEvent(request.ListenerGuid, e1);
+            //Check that there are no several DCs with same Guid.
+            //Note! This might happend when DC is restarted wrong.
+            //For this reason we are only give a warning.
+            List<GXEventsItem> events = new List<GXEventsItem>();
+            if (host.IsDCRegistered(guid))
+            {
+                lock (Db)
+                {
+                    GXAmiSystemError e = new GXAmiSystemError(1, ActionTargets.SystemError, Actions.State, new Exception("Data collector already exists."));
+                    Db.Insert(e);
+                    events.Add(new GXEventsItem(ActionTargets.SystemError, Actions.Add, e));
+                }                                               
+            }
+            ulong mask = (ulong)(((int)request.Targets << 16) | (int)request.Actions);
+            GXEvent e1 = new GXEvent(id, superAdmin, guid, request.Instance, mask);
+            host.AddEvent(request.SessionListener, e1);
+            if (guid != Guid.Empty)
+            {                
+                //Notify that DC is connected.
+                lock (Db)
+                {                    
+                    GXAmiDataCollector dc = Db.Select<GXAmiDataCollector>(q => q.Guid == guid)[0];
+                    dc.State = Gurux.Device.DeviceStates.Connected;
+                    Db.UpdateOnly(dc, p => p.StatesAsInt, p => p.Id == dc.Id);
+                    events.Add(new GXEventsItem(ActionTargets.DataCollector, Actions.State, dc));
+                }                                
+                host.SetEvents(Db, this.Request, 0, events);
+            }
             return new GXEventsRegisterResponse();
         }
 
@@ -97,8 +169,12 @@ namespace GuruxAMI.Service
         /// </summary>
         /// <param name="request"></param>
         /// <returns></returns>
-        public GXEventsResponse Get(GXEventsRequest request)
+        public GXEventsResponse Post(GXEventsRequest request)
 		{
+            if (Guid.Empty.Equals(request.Instance))
+            {
+                throw new Exception("Guid is empty.");             
+            }            
             IAuthSession s = this.GetSession(false);
             long id = 0;
             bool superAdmin = false;
@@ -109,7 +185,7 @@ namespace GuruxAMI.Service
                 superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
             }            
             AppHost host = this.ResolveService<AppHost>();
-            GXEventsItem[] events = host.WaitEvents(request.ListenerGuid, out guid);            
+            GXEventsItem[] events = host.WaitEvents(Db, request.Instance, out guid);
             return new GXEventsResponse(events, guid);
 		}
 	}

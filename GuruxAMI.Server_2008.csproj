@@ -29,31 +29,32 @@
     <Optimize>true</Optimize>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
-    <DefineConstants>TRACE;DEBUG</DefineConstants>
+    <DefineConstants>TRACE;DEBUG;NET35</DefineConstants>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <DocumentationFile>bin\Release\GuruxAMI.Server.XML</DocumentationFile>
+    <DefineConstants>NET35</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="ServiceStack, Version=3.9.45.0, Culture=neutral, processorArchitecture=MSIL">
+    <Reference Include="ServiceStack, Version=3.9.71.0, Culture=neutral, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\GuruxAMI.Common\packages\ServiceStack.3.9.45\lib\net35\ServiceStack.dll</HintPath>
+      <HintPath>..\GuruxAMI.Common\packages\ServiceStack.3.9.71\lib\net35\ServiceStack.dll</HintPath>
     </Reference>
-    <Reference Include="ServiceStack.Common, Version=3.9.45.0, Culture=neutral, processorArchitecture=MSIL">
+    <Reference Include="ServiceStack.Common, Version=3.9.71.0, Culture=neutral, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\GuruxAMI.Common\packages\ServiceStack.Common.3.9.45\lib\net35\ServiceStack.Common.dll</HintPath>
+      <HintPath>..\GuruxAMI.Common\packages\ServiceStack.Common.3.9.71\lib\net35\ServiceStack.Common.dll</HintPath>
     </Reference>
-    <Reference Include="ServiceStack.Interfaces, Version=3.9.45.0, Culture=neutral, processorArchitecture=MSIL">
+    <Reference Include="ServiceStack.Interfaces, Version=1.0.0.0, Culture=neutral, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\GuruxAMI.Common\packages\ServiceStack.Common.3.9.45\lib\net35\ServiceStack.Interfaces.dll</HintPath>
+      <HintPath>..\GuruxAMI.Common\packages\ServiceStack.Common.3.9.71\lib\net35\ServiceStack.Interfaces.dll</HintPath>
     </Reference>
-    <Reference Include="ServiceStack.OrmLite, Version=3.9.45.0, Culture=neutral, processorArchitecture=MSIL">
+    <Reference Include="ServiceStack.OrmLite, Version=3.9.71.0, Culture=neutral, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\GuruxAMI.Common\packages\ServiceStack.OrmLite.MySql.3.9.45\lib\ServiceStack.OrmLite.dll</HintPath>
+      <HintPath>..\GuruxAMI.Common\packages\ServiceStack.OrmLite.SqlServer.3.9.71\lib\net35\ServiceStack.OrmLite.dll</HintPath>
     </Reference>
-    <Reference Include="ServiceStack.ServiceInterface, Version=3.9.45.0, Culture=neutral, processorArchitecture=MSIL">
+    <Reference Include="ServiceStack.ServiceInterface, Version=3.9.71.0, Culture=neutral, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\GuruxAMI.Common\packages\ServiceStack.3.9.45\lib\net35\ServiceStack.ServiceInterface.dll</HintPath>
+      <HintPath>..\GuruxAMI.Common\packages\ServiceStack.3.9.71\lib\net35\ServiceStack.ServiceInterface.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Data" />
@@ -75,6 +76,7 @@
     <Compile Include="GuruxAMI.Server\GXPrefixNamingStrategy.cs" />
     <Compile Include="GuruxAMI.Server\GXSession.cs" />
     <Compile Include="GuruxAMI.Server\GXWebAppHost.cs" />
+    <Compile Include="GuruxAMI.Service\GXSearchService.cs" />
     <Compile Include="GuruxAMI.Service\GXTraceService.cs" />
     <Compile Include="GuruxAMI.Service\GXAmiDataCollectorParameter.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
@@ -88,7 +90,7 @@
     <Compile Include="GuruxAMI.Service\GXActionService.cs" />
     <Compile Include="GuruxAMI.Service\GXDeviceGroupService.cs" />
     <Compile Include="GuruxAMI.Service\GXDeviceService.cs" />
-    <Compile Include="GuruxAMI.Service\GXDeviceTemplateService.cs" />
+    <Compile Include="GuruxAMI.Service\GXDeviceProfilesService.cs" />
     <Compile Include="GuruxAMI.Service\GXErrorService.cs" />
     <Compile Include="GuruxAMI.Service\GXScheduleService.cs" />
     <Compile Include="GuruxAMI.Service\GXTaskService.cs" />

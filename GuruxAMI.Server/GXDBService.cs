@@ -30,12 +30,16 @@
 // Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
 //---------------------------------------------------------------------------
 
-using ServiceStack.OrmLite;
 using GuruxAMI.Common;
 using GuruxAMI.Service;
 using System.Collections.Generic;
 using System;
 using System.Data;
+using ServiceStack.OrmLite;
+#if !SS4
+#else
+using ServiceStack.Data;
+#endif
 
 namespace GuruxAMI.Server
 {
@@ -94,11 +98,41 @@ namespace GuruxAMI.Server
             }
         }
 
+        /// <summary>
+        /// Create database tables.
+        /// </summary>
+        /// <param name="Db"></param>
+        /// <param name="progress"></param>
+        /// <param name="userName"></param>
+        /// <param name="password"></param>
         static public void CreateTables(IDbConnection Db, ProgressEventHandler progress, string userName, string password)
         {
             GuruxAMI.Service.GXManagementService.InitializeDB(Db, progress, userName, password);            
         }
 
+        public void CreateTables(ProgressEventHandler progress, string userName, string password)
+        {
+            using (IDbConnection Db = this.appHost.TryResolve<IDbConnectionFactory>().OpenDbConnection())
+            {
+                GuruxAMI.Service.GXManagementService.InitializeDB(Db, progress, userName, password);
+            }            
+        }
+
+        /// <summary>
+        /// Check are GuruxAMI tables created.
+        /// </summary>
+        /// <returns></returns>
+        public bool IsDatabaseCreated()
+        {
+            using (IDbConnection Db = this.appHost.TryResolve<IDbConnectionFactory>().OpenDbConnection())
+            {
+                return GuruxAMI.Service.GXManagementService.IsDatabaseCreated(Db);
+            }
+        }
+
+        /// <summary>
+        /// Update database.
+        /// </summary>
         public void Update()
         {
             
@@ -108,8 +142,8 @@ namespace GuruxAMI.Server
                 {
                     return;
                 }
-                int version = 0;
                 List<GXAmiSettings> tmp = Db.Select<GXAmiSettings>(q => q.Name == "Version");
+                int version = 0;
                 if (tmp.Count == 1)
                 {
                     version = Convert.ToInt32(tmp[0].Value);
@@ -117,7 +151,7 @@ namespace GuruxAMI.Server
                 else if (tmp.Count != 0)
                 {
                     throw new Exception("Invalid version.");
-                }
+                }                
                 if (version == 0)
                 {
                     Db.ExecuteSql("ALTER TABLE Device ADD TraceLevel int(11) AFTER TimeStamp");
@@ -137,6 +171,35 @@ namespace GuruxAMI.Server
                     Db.CreateTable<GXAmiTrace>(false);
                     Db.CreateTable<GXAmiTraceData>(false);
                     Db.Insert(new GXAmiSettings("Version", "1"));
+                }
+                if (version == 1)
+                {
+                    Db.CreateTable<GXAmiVisualizer>(false);
+                    Db.CreateTable<GXAmiDeviceMedia>(false);                  
+                    tmp[0].Value = "2";
+                    Db.Update<GXAmiSettings>(tmp[0]);
+                }
+                if (version <= 2)
+                {
+                    Db.ExecuteSql("ALTER TABLE DeviceMedia ADD Disabled boolean AFTER Settings");
+                    tmp[0].Value = "3";
+                    Db.Update<GXAmiSettings>(tmp[0]);
+                }
+                if (version <= 3)
+                {
+                    Db.ExecuteSql("ALTER TABLE Task ADD ReplyID bigint(20) AFTER ID");
+                    Db.ExecuteSql("ALTER TABLE TaskLog ADD ReplyID bigint(20) AFTER ID");                    
+                    tmp[0].Value = "4";
+                    Db.Update<GXAmiSettings>(tmp[0]);
+                }
+                if (version <= 4)
+                {
+                    Db.ExecuteSql("ALTER TABLE Schedule ADD Status int(4)");
+                    Db.ExecuteSql("ALTER TABLE Schedule ADD NextRunTine datetime AFTER ScheduleEndTime");
+                    Db.ExecuteSql("ALTER TABLE Schedule ADD LastRunTime datetime AFTER NextRunTine");
+                    Db.ExecuteSql("ALTER TABLE DeviceMedia MODIFY DataCollectorId bigint(20) NULL");                
+                    tmp[0].Value = "5";
+                    Db.Update<GXAmiSettings>(tmp[0]);
                 }
             }
         }       

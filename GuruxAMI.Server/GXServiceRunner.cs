@@ -36,9 +36,16 @@ using System.Data;
 using GuruxAMI.Common;
 using GuruxAMI.Common.Messages;
 using ServiceStack.OrmLite;
+#if !SS4
 using ServiceStack.ServiceHost;
 using ServiceStack.ServiceInterface;
 using ServiceStack.WebHost.Endpoints;
+#else
+using ServiceStack;
+using ServiceStack.Host;
+using ServiceStack.Web;
+using ServiceStack.Data;
+#endif
 
 namespace GuruxAMI.Server
 {
@@ -55,12 +62,16 @@ namespace GuruxAMI.Server
 
         }
 
+#if !SS4
         public override void OnBeforeExecute(IRequestContext requestContext, TRequest request)
+#else
+        public virtual void OnBeforeExecute(IRequest requestContext, TRequest request)
+#endif
         {
             base.OnBeforeExecute(requestContext, request);
         }
 
-        static List<ulong> GetExecutedAction(TRequest request, out ActionTargets target, out Actions action)
+        static List<ulong> GetExecutedAction(TRequest request, out ActionTargets target, out Actions action)       
         {
             List<ulong> list = new List<ulong>();
             if (request is GXCreateTablesRequest)
@@ -156,19 +167,19 @@ namespace GuruxAMI.Server
                 target = ActionTargets.Task;
                 action = Actions.Get;
             }
-            else if (request is GXDeviceTemplateUpdateRequest)
+            else if (request is GXDeviceProfilesUpdateRequest)
             {
-                target = ActionTargets.DeviceTemplate;
+                target = ActionTargets.DeviceProfile;
                 action = Actions.Edit;
             }
-            else if (request is GXDeviceTemplateDeleteRequest)
+            else if (request is GXDeviceProfilesDeleteRequest)
             {
-                target = ActionTargets.DeviceTemplate;
+                target = ActionTargets.DeviceProfile;
                 action = Actions.Remove;
             }
-            else if (request is GXDeviceTemplatesRequest)
+            else if (request is GXDeviceProfilesRequest)
             {
-                target = ActionTargets.DeviceTemplate;
+                target = ActionTargets.DeviceProfile;
                 action = Actions.Get;
             }
             else if (request is GXDataCollectorUpdateRequest)
@@ -205,26 +216,58 @@ namespace GuruxAMI.Server
         /// <param name="request"></param>
         /// <param name="ex"></param>
         /// <returns></returns>
-        public override object HandleException(IRequestContext requestContext,
-            TRequest request, Exception ex)
+#if !SS4
+        public override object HandleException(IRequestContext requestContext, TRequest request, Exception ex)
+#else
+        public override object HandleException(IRequest requestContext, TRequest request, Exception ex)
+#endif        
         {
             //Do not handle connection close exceptions.
             if (ex is System.Net.WebException && (ex as System.Net.WebException).Status != System.Net.WebExceptionStatus.ConnectionClosed)
             {
                 try
                 {
-                    var httpReq = requestContext.Get<ServiceStack.ServiceHost.IHttpRequest>();
+                    if (!System.Diagnostics.EventLog.SourceExists("GuruxAMI"))
+                    {
+                        System.Diagnostics.EventLog.CreateEventSource("GuruxAMI", "Application");
+                    }
+                    System.Diagnostics.EventLog appLog = new System.Diagnostics.EventLog();
+                    appLog.Source = "GuruxAMI";
+                    appLog.WriteEntry(ex.Message);
+                }
+                catch (System.Security.SecurityException)
+                {
+                    //Security exception is thrown if GuruxAMI source is not exists and it's try to create without administrator privilege.
+                    //Just skip this, but errors are not write to eventlog.
+                }
+
+                try
+                {
+#if !SS4
+                    var httpReq = requestContext.Get<IHttpRequest>();
+#else
+                    var httpReq = request.GetDto<IHttpRequest>();
+#endif
+
+
                     int id = 0;
                     if (int.TryParse(httpReq.GetSession(false).Id, out id) && id != 0)
                     {
                         ActionTargets target;
                         Actions action;
                         GetExecutedAction(request, out target, out action);
+#if !SS4
                         IDbConnectionFactory f = this.TryResolve<IDbConnectionFactory>();
+#else
+                        IDbConnectionFactory f = this.ResolveService<IDbConnectionFactory>(requestContext);
+#endif
                         using (IDbConnection Db = f.OpenDbConnection())
                         {
-                            GXAmiSystemError e = new GXAmiSystemError(id, target, action, ex);
-                            Db.Insert(e);
+                            lock (Db)
+                            {
+                                GXAmiSystemError e = new GXAmiSystemError(id, target, action, ex);
+                                Db.Insert(e);
+                            }
                         }
                     }
                     else //If DC. TODO:

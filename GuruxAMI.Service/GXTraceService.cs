@@ -31,16 +31,22 @@
 //---------------------------------------------------------------------------
 
 using GuruxAMI.Common.Messages;
-using ServiceStack.ServiceInterface;
 using GuruxAMI.Common;
 using System.Collections.Generic;
 using System.Data;
 using ServiceStack.OrmLite;
 using System;
 using System.Xml.Linq;
-using ServiceStack.ServiceInterface.Auth;
 using GuruxAMI.Server;
 using System.Text;
+
+#if !SS4
+using ServiceStack.ServiceInterface;
+using ServiceStack.ServiceInterface.Auth;
+#else
+using ServiceStack;
+using ServiceStack.Auth;
+#endif
 
 namespace GuruxAMI.Service
 {
@@ -48,7 +54,11 @@ namespace GuruxAMI.Service
     /// Service handles trace functionality.
     /// </summary>
     [Authenticate]
+#if !SS4
     internal class GXTraceService : ServiceStack.ServiceInterface.Service
+#else
+    internal class GXTraceService : ServiceStack.Service
+#endif    
     {        
         /// <summary>
         /// Update trace level for selected devices or Data Collectors.
@@ -56,24 +66,35 @@ namespace GuruxAMI.Service
         public GXTraceUpdateResponse Post(GXTraceUpdateRequest request)
         {
             List<GXEventsItem> events = new List<GXEventsItem>();
-            if (request.DataCollectorIDs != null)
+            lock (Db)
             {
-                foreach (ulong id in request.DataCollectorIDs)
+                if (request.DataCollectorIDs != null)
                 {
-                    GXAmiDataCollector it = Db.GetById<GXAmiDataCollector>(id);
-                    it.TraceLevel = request.Level;
-                    Db.UpdateOnly(it, p => p.TraceLevelAsInt, p => p.Id == id);
-                    events.Add(new GXEventsItem(ActionTargets.Trace, Actions.Edit, it));
+                    foreach (ulong id in request.DataCollectorIDs)
+                    {
+#if !SS4
+                        GXAmiDataCollector it = Db.GetById<GXAmiDataCollector>(id);
+#else
+                        GXAmiDataCollector it = Db.SingleById<GXAmiDataCollector>(id);
+#endif
+                        it.TraceLevel = request.Level;
+                        Db.UpdateOnly(it, p => p.TraceLevelAsInt, p => p.Id == id);
+                        events.Add(new GXEventsItem(ActionTargets.Trace, Actions.Edit, it));
+                    }
                 }
-            }
-            if (request.DeviceIDs != null)
-            {
-                foreach (ulong id in request.DeviceIDs)
+                if (request.DeviceIDs != null)
                 {
-                    GXAmiDevice it = Db.GetById<GXAmiDevice>(id);
-                    it.TraceLevel = request.Level;
-                    Db.UpdateOnly(it, p => p.TraceLevelAsInt, p => p.Id == id);
-                    events.Add(new GXEventsItem(ActionTargets.Trace, Actions.Edit, it));
+                    foreach (ulong id in request.DeviceIDs)
+                    {
+#if !SS4
+                        GXAmiDevice it = Db.GetById<GXAmiDevice>(id);
+#else
+                        GXAmiDevice it = Db.SingleById<GXAmiDevice>(id);
+#endif                       
+                        it.TraceLevel = request.Level;
+                        Db.UpdateOnly(it, p => p.TraceLevelAsInt, p => p.Id == id);
+                        events.Add(new GXEventsItem(ActionTargets.Trace, Actions.Edit, it));
+                    }
                 }
             }
             AppHost host = this.ResolveService<AppHost>();
@@ -87,54 +108,61 @@ namespace GuruxAMI.Service
         public GXTraceAddResponse Post(GXTraceAddRequest request)
         {
             List<GXEventsItem> events = new List<GXEventsItem>();
-            foreach (GXAmiTrace it in request.Traces)
+            lock (Db)
             {
-                //If DC is adding trace.
-                if (it.DeviceId == 0)
+                foreach (GXAmiTrace it in request.Traces)
                 {
-                    IAuthSession s = this.GetSession(false);
-                    Guid guid;
-                    if (!GuruxAMI.Server.GXBasicAuthProvider.IsGuid(s.Id, out guid))
+                    //If DC is adding trace.
+                    if (it.DeviceId == 0)
                     {
-                        throw new ArgumentException("Access denied.");
+                        IAuthSession s = this.GetSession(false);
+                        Guid guid;
+                        if (!GuruxAMI.Server.GXBasicAuthProvider.IsGuid(s.Id, out guid))
+                        {
+                            throw new ArgumentException("Access denied.");
+                        }
+                        List<GXAmiDataCollector> list = Db.Select<GXAmiDataCollector>(q => q.Guid == guid);
+                        if (list.Count != 1)
+                        {
+                            throw new ArgumentException("Access denied.");
+                        }
+                        it.DataCollectorId = list[0].Id;
+                        it.DataCollectorGuid = guid;
                     }
-                    List<GXAmiDataCollector> list = Db.Select<GXAmiDataCollector>(q => q.Guid == guid);
-                    if (list.Count != 1)
+                    it.Timestamp = DateTime.Now;
+                    Db.Insert(it);
+#if !SS4
+                    it.Id = (ulong)Db.GetLastInsertId();
+#else
+                    it.Id = (ulong)Db.LastInsertId();
+#endif                    
+                    it.DataType = it.Data.GetType().FullName;
+                    string data;
+                    if (it.Data is byte[])
                     {
-                        throw new ArgumentException("Access denied.");
+                        data = BitConverter.ToString(it.Data as byte[]);
                     }
-                    it.DataCollectorId = list[0].Id;
-                    it.DataCollectorGuid = guid;
+                    else
+                    {
+                        data = it.Data.ToString();
+                    }
+                    string[] tmp = SplitByLength(data, 255);
+                    int index = 0;
+                    //If there is only one row set index to 0, otherwice start index from One.
+                    if (tmp.Length == 1)
+                    {
+                        index = -1;
+                    }
+                    foreach (string str in tmp)
+                    {
+                        GXAmiTraceData d = new GXAmiTraceData();
+                        d.Index = ++index;
+                        d.TraceId = it.Id;
+                        d.Data = str;
+                        Db.Insert(d);
+                    }
+                    events.Add(new GXEventsItem(ActionTargets.Trace, Actions.Add, it));
                 }
-                it.Timestamp = DateTime.Now;
-                Db.Insert(it);
-                it.Id = (ulong) Db.GetLastInsertId();
-                it.DataType = it.Data.GetType().FullName;
-                string data;
-                if (it.Data is byte[])
-                {
-                    data = BitConverter.ToString(it.Data as byte[]);
-                }
-                else
-                {
-                    data = it.Data.ToString();
-                }
-                string[] tmp = SplitByLength(data, 255);
-                int index = 0;
-                //If there is only one row set index to 0, otherwice start index from One.
-                if (tmp.Length == 1)
-                {
-                    index = -1;
-                }
-                foreach (string str in tmp)
-                {
-                    GXAmiTraceData d = new GXAmiTraceData();
-                    d.Index = ++index;
-                    d.TraceId = it.Id;
-                    d.Data = str;
-                    Db.Insert(d);
-                }
-                events.Add(new GXEventsItem(ActionTargets.Trace, Actions.Add, it));
             }
             AppHost host = this.ResolveService<AppHost>();
             host.SetEvents(Db, this.Request, 0, events);
@@ -163,24 +191,27 @@ namespace GuruxAMI.Service
         /// <returns></returns>
         public GXTraceLevelResponse Get(GXTraceLevelRequest request)
         {
-            List<System.Diagnostics.TraceLevel> list = new List<System.Diagnostics.TraceLevel>();
-            if (request.DataCollectors != null)
+            lock (Db)
             {
-                foreach (Guid guid in request.DataCollectors)
+                List<System.Diagnostics.TraceLevel> list = new List<System.Diagnostics.TraceLevel>();
+                if (request.DataCollectors != null)
                 {
-                    GXAmiDataCollector it = Db.Select<GXAmiDataCollector>(q => q.Guid == guid)[0];
-                    list.Add(it.TraceLevel);
+                    foreach (Guid guid in request.DataCollectors)
+                    {
+                        GXAmiDataCollector it = Db.Select<GXAmiDataCollector>(q => q.Guid == guid)[0];
+                        list.Add(it.TraceLevel);
+                    }
                 }
-            }
-            if (request.DeviceIDs != null)
-            {
-                foreach (ulong id in request.DeviceIDs)
+                if (request.DeviceIDs != null)
                 {
-                    GXAmiDevice it = Db.Select<GXAmiDevice>(q => q.Id == id)[0];
-                    list.Add(it.TraceLevel);
+                    foreach (ulong id in request.DeviceIDs)
+                    {
+                        GXAmiDevice it = Db.Select<GXAmiDevice>(q => q.Id == id)[0];
+                        list.Add(it.TraceLevel);
+                    }
                 }
+                return new GXTraceLevelResponse(list.ToArray());
             }
-            return new GXTraceLevelResponse(list.ToArray());            
         }       
 
         /// <summary>
@@ -190,26 +221,29 @@ namespace GuruxAMI.Service
         /// <returns></returns>
         public GXTracesResponse Post(GXTracesRequest request)
         {
-            List<GXAmiTrace> list = new List<GXAmiTrace>();
-            if (request.DataCollectors != null)
+            lock (Db)
             {
-                foreach (Guid guid in request.DataCollectors)
+                List<GXAmiTrace> list = new List<GXAmiTrace>();
+                if (request.DataCollectors != null)
                 {
-                    string query = string.Format("SELECT {0}.* FROM {0} INNER JOIN {1} ON {0}.DataCollectorId = {1}.ID WHERE {1}.Guid = '{2}'",
-                        GuruxAMI.Server.AppHost.GetTableName<GXAmiTrace>(Db),
-                        GuruxAMI.Server.AppHost.GetTableName<GXAmiDataCollector>(Db),
-                        guid.ToString().Replace("-", ""));
-                    list.AddRange(Db.Select<GXAmiTrace>(query));
+                    foreach (Guid guid in request.DataCollectors)
+                    {
+                        string query = string.Format("SELECT {0}.* FROM {0} INNER JOIN {1} ON {0}.DataCollectorId = {1}.ID WHERE {1}.Guid = '{2}'",
+                            GuruxAMI.Server.AppHost.GetTableName<GXAmiTrace>(Db),
+                            GuruxAMI.Server.AppHost.GetTableName<GXAmiDataCollector>(Db),
+                            guid.ToString().Replace("-", ""));
+                        list.AddRange(Db.Select<GXAmiTrace>(query));
+                    }
                 }
-            }
-            if (request.DeviceIDs != null)
-            {
-                foreach (ulong id in request.DeviceIDs)
+                if (request.DeviceIDs != null)
                 {
-                    list.AddRange(Db.Select<GXAmiTrace>(q => q.DeviceId == id));
+                    foreach (ulong id in request.DeviceIDs)
+                    {
+                        list.AddRange(Db.Select<GXAmiTrace>(q => q.DeviceId == id));
+                    }
                 }
+                return new GXTracesResponse(list.ToArray());
             }
-            return new GXTracesResponse(list.ToArray());
         }    
 
         /// <summary>
@@ -221,38 +255,41 @@ namespace GuruxAMI.Service
         {
             List<GXEventsItem> events = new List<GXEventsItem>();
             List<GXAmiTrace> items = new List<GXAmiTrace>();
-            if (request.DeviceIDs != null)
+            lock (Db)
             {
-                foreach (ulong id in request.DeviceIDs)
+                if (request.DeviceIDs != null)
                 {
-                    //TODO: Check that user can access the device.
-                    items.AddRange(Db.Select<GXAmiTrace>(q => q.DeviceId == id));
+                    foreach (ulong id in request.DeviceIDs)
+                    {
+                        //TODO: Check that user can access the device.
+                        items.AddRange(Db.Select<GXAmiTrace>(q => q.DeviceId == id));
+                    }
                 }
-            }
-            if (request.DataCollectors != null)
-            {
-                foreach (Guid guid in request.DataCollectors)
+                if (request.DataCollectors != null)
                 {
-                    //TODO: Check that user can access the DC.
-                    string query = string.Format("SELECT {0}.* FROM {0} INNER JOIN {1} ON {0}.DataCollectorId = {1}.ID WHERE {1}.Guid = {2}",
-                        GuruxAMI.Server.AppHost.GetTableName<GXAmiTrace>(Db),
-                        GuruxAMI.Server.AppHost.GetTableName<GXAmiDataCollector>(Db),
-                        guid.ToString().Replace("-", ""));
-                    items.AddRange(Db.Select<GXAmiTrace>(query));
+                    foreach (Guid guid in request.DataCollectors)
+                    {
+                        //TODO: Check that user can access the DC.
+                        string query = string.Format("SELECT {0}.* FROM {0} INNER JOIN {1} ON {0}.DataCollectorId = {1}.ID WHERE {1}.Guid = {2}",
+                            GuruxAMI.Server.AppHost.GetTableName<GXAmiTrace>(Db),
+                            GuruxAMI.Server.AppHost.GetTableName<GXAmiDataCollector>(Db),
+                            guid.ToString().Replace("-", ""));
+                        items.AddRange(Db.Select<GXAmiTrace>(query));
+                    }
                 }
-            }
-            if (request.TraceIDs != null)
-            {
-                foreach (ulong id in request.TraceIDs)
+                if (request.TraceIDs != null)
                 {
-                    //TODO: Check that user can access the DC.
-                    items.AddRange(Db.Select<GXAmiTrace>(q => q.Id == id));
+                    foreach (ulong id in request.TraceIDs)
+                    {
+                        //TODO: Check that user can access the DC.
+                        items.AddRange(Db.Select<GXAmiTrace>(q => q.Id == id));
+                    }
                 }
-            }
-            Db.DeleteAll(items.ToArray());
-            foreach (GXAmiTrace it in items)
-            {
-                events.Add(new GXEventsItem(ActionTargets.Trace, Actions.Add, it));
+                Db.DeleteByIds<GXAmiTrace>(items.ToArray());
+                foreach (GXAmiTrace it in items)
+                {
+                    events.Add(new GXEventsItem(ActionTargets.Trace, Actions.Add, it));
+                }
             }
             AppHost host = this.ResolveService<AppHost>();
             host.SetEvents(Db, this.Request, 0, events);

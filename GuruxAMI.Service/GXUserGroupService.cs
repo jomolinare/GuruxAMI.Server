@@ -31,16 +31,22 @@
 //---------------------------------------------------------------------------
 
 using GuruxAMI.Common.Messages;
-using ServiceStack.ServiceInterface;
 using GuruxAMI.Common;
 using System.Collections.Generic;
 using System.Data;
 using ServiceStack.OrmLite;
 using System;
 using System.Xml.Linq;
-using ServiceStack.ServiceInterface.Auth;
 using GuruxAMI.Server;
 using System.Linq;
+
+#if !SS4
+using ServiceStack.ServiceInterface;
+using ServiceStack.ServiceInterface.Auth;
+#else
+using ServiceStack;
+using ServiceStack.Auth;
+#endif
 
 namespace GuruxAMI.Service
 {
@@ -48,7 +54,11 @@ namespace GuruxAMI.Service
     /// Handles user group add, remove and update services.
     /// </summary>
     [Authenticate]
+#if !SS4
     internal class GXUserGroupService : ServiceStack.ServiceInterface.Service
+#else
+    internal class GXUserGroupService : ServiceStack.Service
+#endif    
 	{
         /// <summary>
         /// Add or update new user group.
@@ -63,74 +73,85 @@ namespace GuruxAMI.Service
             }
             long adderId = Convert.ToInt64(s.Id);
             List<GXEventsItem> events = new List<GXEventsItem>();
-            using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
-            {                
-                bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
-                //Add new user groups           
-                foreach (GXAmiUserGroup it in request.UserGroups)
+            lock (Db)
+            {
+                using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
                 {
-                    if (string.IsNullOrEmpty(it.Name))
+                    bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
+                    //Add new user groups           
+                    foreach (GXAmiUserGroup it in request.UserGroups)
                     {
-                        throw new ArgumentException("Invalid name.");
-                    }                    
-                    //If new user group.
-                    if (it.Id == 0)
-                    {
-                        it.Added = DateTime.Now.ToUniversalTime();
-                        Db.Insert(it);
-                        it.Id = Db.GetLastInsertId();
-                        //Add adder to user group if adder is not super admin.
-                        if (!superAdmin)
+                        if (string.IsNullOrEmpty(it.Name))
                         {
-                            GXAmiUserGroupUser g = new GXAmiUserGroupUser();
-                            g.UserID = Convert.ToInt64(s.Id);
-                            g.UserGroupID = it.Id;
-                            g.Added = DateTime.Now.ToUniversalTime();
-                            Db.Insert(g);                            
+                            throw new ArgumentException("Invalid name.");
                         }
-                        events.Add(new GXEventsItem(ActionTargets.UserGroup, Actions.Add, it));
-                    }
-                    else //Update user group.
-                    {
-                        if (!superAdmin)
+                        //If new user group.
+                        if (it.Id == 0)
                         {
-                            //User can't update user data if he do not have access to the user group.
-                            long[] groups1 = GXUserGroupService.GetUserGroups(Db, adderId);
-                            long[] groups2 = GXUserGroupService.GetUserGroups(Db, it.Id);
-                            bool found = false;
-                            foreach (long it1 in groups1)
+                            it.Added = DateTime.Now.ToUniversalTime();
+                            Db.Insert(it);
+#if !SS4
+                            it.Id = Db.GetLastInsertId();
+#else
+                            it.Id = Db.LastInsertId();
+#endif                            
+                            //Add adder to user group if adder is not super admin.
+                            if (!superAdmin)
                             {
-                                foreach (long it2 in groups2)
+                                GXAmiUserGroupUser g = new GXAmiUserGroupUser();
+                                g.UserID = Convert.ToInt64(s.Id);
+                                g.UserGroupID = it.Id;
+                                g.Added = DateTime.Now.ToUniversalTime();
+                                Db.Insert(g);
+                            }
+                            events.Add(new GXEventsItem(ActionTargets.UserGroup, Actions.Add, it));
+                        }
+                        else //Update user group.
+                        {
+                            if (!superAdmin)
+                            {
+                                //User can't update user data if he do not have access to the user group.
+                                long[] groups1 = GXUserGroupService.GetUserGroups(Db, adderId);
+                                long[] groups2 = GXUserGroupService.GetUserGroups(Db, it.Id);
+                                bool found = false;
+                                foreach (long it1 in groups1)
                                 {
-                                    if (it1 == it2)
+                                    foreach (long it2 in groups2)
                                     {
-                                        found = true;
+                                        if (it1 == it2)
+                                        {
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                    if (found)
+                                    {
                                         break;
                                     }
                                 }
-                                if (found)
+                                if (!found)
                                 {
-                                    break;
+                                    throw new ArgumentException("Access denied.");
                                 }
                             }
-                            if (!found)
-                            {
-                                throw new ArgumentException("Access denied.");
-                            }
+                            //Get Added time.
+#if !SS4
+                            GXAmiUserGroup orig = Db.GetById<GXAmiUserGroup>(it.Id);
+#else
+                            GXAmiUserGroup orig = Db.SingleById<GXAmiUserGroup>(it.Id);                            
+#endif                            
+                            it.Added = orig.Added.ToUniversalTime();
+                            Db.Update(it);
+                            events.Add(new GXEventsItem(ActionTargets.UserGroup, Actions.Edit, it));
                         }
-                        //Get Added time.
-                        GXAmiUserGroup orig = Db.GetById<GXAmiUserGroup>(it.Id);
-                        it.Added = orig.Added.ToUniversalTime();
-                        Db.Update(it);
-                        events.Add(new GXEventsItem(ActionTargets.UserGroup, Actions.Edit, it));
                     }
+                    trans.Commit();
                 }
-                AppHost host = this.ResolveService<AppHost>();
-                host.SetEvents(Db, this.Request, adderId, events);
-                trans.Commit();
-            }            
+            }
+            AppHost host = this.ResolveService<AppHost>();
+            host.SetEvents(Db, this.Request, adderId, events);
             return new GXUserGroupUpdateResponse(request.UserGroups);
-		}
+        }
 
         /// <summary>
         /// Add users to user groups.
@@ -147,51 +168,54 @@ namespace GuruxAMI.Service
             }
             long adderId = Convert.ToInt64(s.Id);
             List<GXEventsItem> events = new List<GXEventsItem>();
-            using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
+            lock (Db)
             {
-                bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
-                foreach (long user in request.Users)
+                using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
                 {
-                    foreach (long group in request.Groups)
+                    bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
+                    foreach (long user in request.Users)
                     {
-                        if (!superAdmin)
+                        foreach (long group in request.Groups)
                         {
-                            //User can't update user data if he do not have access to the user group.
-                            long[] groups1 = GXUserGroupService.GetUserGroups(Db, adderId);
-                            long[] groups2 = GXUserGroupService.GetUserGroups(Db, group);
-                            bool found = false;
-                            foreach (long it1 in groups1)
+                            if (!superAdmin)
                             {
-                                foreach (long it2 in groups2)
+                                //User can't update user data if he do not have access to the user group.
+                                long[] groups1 = GXUserGroupService.GetUserGroups(Db, adderId);
+                                long[] groups2 = GXUserGroupService.GetUserGroups(Db, group);
+                                bool found = false;
+                                foreach (long it1 in groups1)
                                 {
-                                    if (it1 == it2)
+                                    foreach (long it2 in groups2)
                                     {
-                                        found = true;
+                                        if (it1 == it2)
+                                        {
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                    if (found)
+                                    {
                                         break;
                                     }
                                 }
-                                if (found)
+                                if (!found)
                                 {
-                                    break;
+                                    throw new ArgumentException("Access denied.");
                                 }
                             }
-                            if (!found)
-                            {
-                                throw new ArgumentException("Access denied.");
-                            }
+                            GXAmiUserGroupUser it = new GXAmiUserGroupUser();
+                            it.UserGroupID = group;
+                            it.UserID = user;
+                            it.Added = DateTime.Now.ToUniversalTime();
+                            Db.Insert(it);
+                            events.Add(new GXEventsItem(ActionTargets.UserGroup, Actions.Edit, it));
                         }
-                        GXAmiUserGroupUser it = new GXAmiUserGroupUser();
-                        it.UserGroupID = group;
-                        it.UserID = user;
-                        it.Added = DateTime.Now.ToUniversalTime();
-                        Db.Insert(it);
-                        events.Add(new GXEventsItem(ActionTargets.UserGroup, Actions.Edit, it));
                     }
+                    trans.Commit();
                 }
-                AppHost host = this.ResolveService<AppHost>();
-                host.SetEvents(Db, this.Request, adderId, events);
-                trans.Commit();
             }
+            AppHost host = this.ResolveService<AppHost>();
+            host.SetEvents(Db, this.Request, adderId, events);
             return new GXAddUserToUserGroupResponse();
         }
 
@@ -205,53 +229,56 @@ namespace GuruxAMI.Service
             }
             long adderId = Convert.ToInt64(s.Id);
             List<GXEventsItem> events = new List<GXEventsItem>();
-            using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
+            lock (Db)
             {
-                bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
-                foreach (long user in request.Users)
+                using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
                 {
-                    foreach (long group in request.Groups)
+                    bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
+                    foreach (long user in request.Users)
                     {
-                        if (!superAdmin)
+                        foreach (long group in request.Groups)
                         {
-                            //User can't update user data if he do not have access to the user group.
-                            long[] groups1 = GXUserGroupService.GetUserGroups(Db, adderId);
-                            long[] groups2 = GXUserGroupService.GetUserGroups(Db, group);
-                            bool found = false;
-                            foreach (long it1 in groups1)
+                            if (!superAdmin)
                             {
-                                foreach (long it2 in groups2)
+                                //User can't update user data if he do not have access to the user group.
+                                long[] groups1 = GXUserGroupService.GetUserGroups(Db, adderId);
+                                long[] groups2 = GXUserGroupService.GetUserGroups(Db, group);
+                                bool found = false;
+                                foreach (long it1 in groups1)
                                 {
-                                    if (it1 == it2)
+                                    foreach (long it2 in groups2)
                                     {
-                                        found = true;
+                                        if (it1 == it2)
+                                        {
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                    if (found)
+                                    {
                                         break;
                                     }
                                 }
-                                if (found)
+                                if (!found)
                                 {
-                                    break;
+                                    throw new ArgumentException("Access denied.");
                                 }
                             }
-                            if (!found)
+                            string query = "SELECT * FROM " + GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroupUser>(Db);
+                            query += string.Format("WHERE UserID = {0} AND UserGroupID = {1}", user, group);
+                            List<GXAmiUserGroupUser> items = Db.Select<GXAmiUserGroupUser>(query);
+                            foreach (GXAmiUserGroupUser it in items)
                             {
-                                throw new ArgumentException("Access denied.");
+                                Db.DeleteById<GXAmiUserGroupUser>(it.Id);
+                                events.Add(new GXEventsItem(ActionTargets.UserGroup, Actions.Edit, group));
                             }
                         }
-                        string query = "SELECT * FROM " + GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroupUser>(Db);
-                        query += string.Format("WHERE UserID = {0} AND UserGroupID = {1}", user, group);
-                        List<GXAmiUserGroupUser> items = Db.Select<GXAmiUserGroupUser>(query);
-                        foreach (GXAmiUserGroupUser it in items)
-                        {
-                            Db.DeleteById<GXAmiUserGroupUser>(it.Id);
-                            events.Add(new GXEventsItem(ActionTargets.UserGroup, Actions.Edit, group));
-                        }                        
                     }
+                    trans.Commit();
                 }
-                AppHost host = this.ResolveService<AppHost>();
-                host.SetEvents(Db, this.Request, adderId, events);
-                trans.Commit();
             }
+            AppHost host = this.ResolveService<AppHost>();
+            host.SetEvents(Db, this.Request, adderId, events);
             return new GXRemoveUserFromUserGroupResponse();
         }
 
@@ -355,45 +382,56 @@ namespace GuruxAMI.Service
         /// </summary>
 		public GXUserGroupResponse Post(GXUserGroupsRequest request)
 		{
-            List<GXAmiUserGroup> list;
-            if (request.UserGroupId != 0)
+            lock (Db)
             {
-                list = new List<GXAmiUserGroup>();
-                list.Add(Db.GetById<GXAmiUserGroup>(request.UserGroupId));                
-            }
-            //Returns the user group(s) to which the device belongs to.
-            else if (request.DeviceId != 0)
-            {
-                throw new NotImplementedException();
-            }
-            //Returns the user group(s) to which the device group belongs to.
-            else if (request.DeviceGroupId != 0)
-            {
-                throw new NotImplementedException();
-            }
-            else
-            {
-                list = GetUserGroups(request.UserId, request.Removed);
-            }
-            //Remove excluded user groups.
-            if (request.Excluded != null && request.Excluded.Length != 0)
-            {
-                List<long> ids = new List<long>(request.Excluded);
-                var excludeUserGroups = from c in list where !ids.Contains(c.Id) select c;
-                list = excludeUserGroups.ToList();
-            }
-            //Get user groups by range.
-            if (request.Index != 0 || request.Count != 0)
-            {
-                if (request.Count == 0 || request.Index + request.Count > list.Count)
+                List<GXAmiUserGroup> list;
+                if (request.UserGroupId != 0)
                 {
-                    request.Count = list.Count - request.Index;
+                    list = new List<GXAmiUserGroup>();
+#if !SS4
+                    list.Add(Db.GetById<GXAmiUserGroup>(request.UserGroupId));
+#else
+                    list.Add(Db.SingleById<GXAmiUserGroup>(request.UserGroupId));                    
+#endif                    
                 }
-                list.RemoveRange(0, request.Index);
-                var limitUserGroups = list.Take(request.Count);
-                list = limitUserGroups.ToList();
+                //Returns the user group(s) to which the device belongs to.
+                else if (request.DeviceId != 0)
+                {
+                    throw new NotImplementedException();
+                }
+                //Returns the user group(s) to which the device group belongs to.
+                else if (request.DeviceGroupId != 0)
+                {
+                    string query = string.Format("SELECT DISTINCT {0}.* FROM {0} INNER JOIN {1} ON {0}.ID = {1}.UserGroupID WHERE DeviceGroupID={2}",
+                        GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroup>(Db),
+                        GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroupDeviceGroup>(Db),
+                        request.DeviceGroupId);
+                    list = Db.Select<GXAmiUserGroup>(query);
+                }
+                else
+                {
+                    list = GetUserGroups(request.UserId, request.Removed);
+                }
+                //Remove excluded user groups.
+                if (request.Excluded != null && request.Excluded.Length != 0)
+                {
+                    List<long> ids = new List<long>(request.Excluded);
+                    var excludeUserGroups = from c in list where !ids.Contains(c.Id) select c;
+                    list = excludeUserGroups.ToList();
+                }
+                //Get user groups by range.
+                if (request.Index != 0 || request.Count != 0)
+                {
+                    if (request.Count == 0 || request.Index + request.Count > list.Count)
+                    {
+                        request.Count = list.Count - request.Index;
+                    }
+                    list.RemoveRange(0, request.Index);
+                    var limitUserGroups = list.Take(request.Count);
+                    list = limitUserGroups.ToList();
+                }
+                return new GXUserGroupResponse(list.ToArray());
             }
-            return new GXUserGroupResponse(list.ToArray());
 		}
 
         /// <summary>
@@ -401,8 +439,8 @@ namespace GuruxAMI.Service
         /// </summary>
         /// <param name="request"></param>
         /// <returns></returns>
-		public GXUserGroupDeleteResponse Post(GXUserGroupDeleteRequest request)
-		{            
+        public GXUserGroupDeleteResponse Post(GXUserGroupDeleteRequest request)
+        {
             IAuthSession s = this.GetSession(false);
             //Normal user can't remove device.
             if (!GuruxAMI.Server.GXBasicAuthProvider.CanUserEdit(s))
@@ -411,31 +449,38 @@ namespace GuruxAMI.Service
             }
             long id = Convert.ToInt64(s.Id);
             List<GXEventsItem> events = new List<GXEventsItem>();
-            foreach (int it in request.GroupIDs)
+            lock (Db)
             {
-                if (it == 0)
+                foreach (int it in request.GroupIDs)
                 {
-                    throw new ArgumentException("ID is required");
+                    if (it == 0)
+                    {
+                        throw new ArgumentException("ID is required");
+                    }
+                    if (GetUserGroups(Db, it).Length == 1)
+                    {
+                        throw new ArgumentException("User must belong atleast one user group.");
+                    }
+#if !SS4
+                    GXAmiUserGroup ug = Db.QueryById<GXAmiUserGroup>(it);
+#else
+                    GXAmiUserGroup ug = Db.SingleById<GXAmiUserGroup>(it);
+#endif                                                                                              
+                    if (request.Permanently)
+                    {
+                        Db.DeleteById<GXAmiUserGroup>(it);
+                    }
+                    else
+                    {
+                        ug.Removed = DateTime.Now.ToUniversalTime();
+                        Db.UpdateOnly(ug, p => p.Removed, p => p.Id == it);
+                    }
+                    events.Add(new GXEventsItem(ActionTargets.UserGroup, Actions.Remove, ug));
                 }
-                if (GetUserGroups(Db, it).Length == 1)
-                {
-                    throw new ArgumentException("User must belong atleast one user group.");
-                }
-                GXAmiUserGroup ug = Db.QueryById<GXAmiUserGroup>(it);
-                if (request.Permanently)
-                {
-                    Db.DeleteById<GXAmiUserGroup>(it);
-                }
-                else
-                {
-                    ug.Removed = DateTime.Now;
-                    Db.UpdateOnly(ug, p => p.Removed, p => p.Id == it);
-                }
-                events.Add(new GXEventsItem(ActionTargets.UserGroup, Actions.Remove, ug));       
             }
             AppHost host = this.ResolveService<AppHost>();
             host.SetEvents(Db, this.Request, id, events);
-			return new GXUserGroupDeleteResponse();
-		}
+            return new GXUserGroupDeleteResponse();
+        }
 	}
 }

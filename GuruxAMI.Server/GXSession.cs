@@ -8,7 +8,10 @@ namespace GuruxAMI.Server
 {
     internal class GXSession
     {
-        public Guid ListenerGuid;
+        /// <summary>
+        /// Session Guid.
+        /// </summary>
+        public Guid Session;
 
         public ManualResetEvent Received = new ManualResetEvent(false);
 
@@ -19,7 +22,7 @@ namespace GuruxAMI.Server
 
         public GXSession(Guid guid)
         {
-            ListenerGuid = guid;
+            Session = guid;
         }
     }
 }

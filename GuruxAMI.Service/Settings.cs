@@ -36,7 +36,11 @@ using System.Collections.Generic;
 using System.Runtime.Serialization;
 using System.Data;
 using ServiceStack.OrmLite;
+#if !SS4
 using ServiceStack.DesignPatterns.Model;
+#else
+using ServiceStack.Model;
+#endif
 
 namespace GuruxAMI.Service
 {

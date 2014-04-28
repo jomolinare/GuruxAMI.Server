@@ -34,11 +34,19 @@ using System;
 using System.Reflection;
 using Funq;
 using ServiceStack.OrmLite;
+#if !SS4
 using ServiceStack.ServiceHost;
 using ServiceStack.ServiceInterface;
 using ServiceStack.ServiceInterface.Auth;
 using ServiceStack.WebHost.Endpoints;
 using ServiceStack.ServiceInterface.Cors;
+#else
+using ServiceStack;
+using ServiceStack.Auth;
+using ServiceStack.Data;
+using ServiceStack.Web;
+using ServiceStack.Host;
+#endif
 
 namespace GuruxAMI.Server
 {
@@ -91,7 +99,20 @@ namespace GuruxAMI.Server
             container.Register<IDbConnectionFactory>(ConnectionFactory);
             container.Register<AppHost>(new AppHost());
             //Add Cors for jQuery.
-            Plugins.Add(new CorsFeature("*", "GET, POST, DELETE, OPTIONS", "Content-Type, Authorization", false));
+            Plugins.Add(new CorsFeature("*", "GET, POST, DELETE, OPTIONS", 
+                "Content-Type, Authorization, Accept", true));
+
+            this.PreRequestFilters.Add((httpReq, httpRes) =>
+            {
+                //Handles Request and closes Responses after emitting global HTTP Headers
+#if !SS4
+                if (httpReq.HttpMethod == "OPTIONS")
+                    httpRes.End();
+#else
+                if (httpReq.GetSessionOptions() != null)
+                    httpRes.End();
+#endif
+            });
             //Basic Authentication is asked when connection is made.            
             Plugins.Add(new AuthFeature(() => new AuthUserSession(), new IAuthProvider[] {
                               new GXBasicAuthProvider()}, null));

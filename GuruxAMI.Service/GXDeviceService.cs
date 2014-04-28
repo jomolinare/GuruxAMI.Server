@@ -36,10 +36,15 @@ using System.Data;
 using GuruxAMI.Common;
 using GuruxAMI.Common.Messages;
 using ServiceStack.OrmLite;
-using ServiceStack.ServiceInterface;
-using ServiceStack.ServiceInterface.Auth;
 using GuruxAMI.Server;
 using System.Linq;
+#if !SS4
+using ServiceStack.ServiceInterface;
+using ServiceStack.ServiceInterface.Auth;
+#else
+using ServiceStack;
+using ServiceStack.Auth;
+#endif
 
 namespace GuruxAMI.Service
 {
@@ -47,7 +52,11 @@ namespace GuruxAMI.Service
     /// Service handles device functionality.
     /// </summary>
 	[Authenticate]
+#if !SS4
     internal class GXDeviceService : ServiceStack.ServiceInterface.Service
+#else
+    internal class GXDeviceService : ServiceStack.Service
+#endif    
 	{
         void UpdateParameters(IDbConnection Db, ulong deviceId, ulong parentId, GXAmiParameter[] parameters, bool insert)
         {
@@ -76,23 +85,26 @@ namespace GuruxAMI.Service
         }
 
         /// <summary>
-        /// Update paraeters.
+        /// Update parameters.
         /// </summary>
         /// <param name="request"></param>
         /// <returns></returns>
         public GXParameterUpdateResponse Post(GXParameterUpdateRequest request)
         {
-            using (IDbTransaction trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
+            lock (Db)
             {
-                foreach (var it in request.Parameters)
+                using (IDbTransaction trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
                 {
-                    GXAmiParameter param = new GXAmiParameter();
-                    param.Value = it.Value;
-                    Db.UpdateOnly(param, p => p.Value, p => p.Id == it.Key);
+                    foreach (var it in request.Parameters)
+                    {
+                        GXAmiParameter param = new GXAmiParameter();
+                        param.Value = it.Value;
+                        Db.UpdateOnly(param, p => p.Value, p => p.Id == it.Key);
+                    }
+                    trans.Commit();
                 }
-                trans.Commit();
+                return new GXParameterUpdateResponse();
             }
-            return new GXParameterUpdateResponse();
         }
 
         /// <summary>
@@ -108,192 +120,216 @@ namespace GuruxAMI.Service
                 throw new ArgumentException("Access denied.");
             }
             long adderId = Convert.ToInt64(s.Id);
-            using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
+            lock (Db)
             {
-                bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
-                //Add new device groups           
-                foreach (GXAmiDevice it in request.Devices)
+                using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
                 {
-                    if (string.IsNullOrEmpty(it.Name))
+                    bool newDevice;
+                    bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
+                    //Add new device groups           
+                    foreach (GXAmiDevice it in request.Devices)
                     {
-                        throw new ArgumentException("Invalid name.");
-                    }
-                    //If new device.
-                    if (it.Id == 0)
-                    {
-                        it.Id = GXAmiSettings.GetNewDeviceID(Db);
-                        it.Added = DateTime.Now.ToUniversalTime();
-                        Db.Insert(it);
-                        events.Add(new GXEventsItem(ActionTargets.Device, Actions.Add, it));
-                        //Add adder to user group if adder is not super admin.
-                        foreach (ulong dgId in request.DeviceGroups)
+                        if (string.IsNullOrEmpty(it.Name))
                         {
-                            //Can user access to the device group.
-                            if (!superAdmin && dgId != 0 && !GXDeviceGroupService.CanUserAccessDeviceGroup(Db, adderId, dgId))
-                            {
-                                throw new ArgumentException("Access denied.");
-                            }
-                            GXAmiDeviceGroupDevice g = new GXAmiDeviceGroupDevice();
-                            g.DeviceGroupID = dgId;
-                            g.DeviceID = it.Id;
-                            g.Added = DateTime.Now.ToUniversalTime();
-                            Db.Insert(g);
-                            events.Add(new GXEventsItem(ActionTargets.DeviceGroup, Actions.Edit, dgId));
+                            throw new ArgumentException("Invalid name.");
                         }
-                    }
-                    else //Update device.
-                    {
+                        //If new device.
+                        newDevice = it.Id == 0;
+                        if (newDevice)
+                        {
+                            it.Id = GXAmiSettings.GetNewDeviceID(Db);
+                            it.Added = DateTime.Now.ToUniversalTime();
+                            Db.Insert(it);
+                            events.Add(new GXEventsItem(ActionTargets.Device, Actions.Add, it));
+                            //Add adder to user group if adder is not super admin.
+                            foreach (ulong dgId in request.DeviceGroups)
+                            {
+                                //Can user access to the device group.
+                                if (!superAdmin && dgId != 0 && !GXDeviceGroupService.CanUserAccessDeviceGroup(Db, adderId, dgId))
+                                {
+                                    throw new ArgumentException("Access denied.");
+                                }
+                                GXAmiDeviceGroupDevice g = new GXAmiDeviceGroupDevice();
+                                g.DeviceGroupID = dgId;
+                                g.DeviceID = it.Id;
+                                g.Added = DateTime.Now.ToUniversalTime();
+                                Db.Insert(g);
+                                events.Add(new GXEventsItem(ActionTargets.DeviceGroup, Actions.Edit, dgId));
+                            }
+                            it.Categories = null;
+                            it.Tables = null;
+                        }
+                        else //Update device.
+                        {
+                            if (request.DeviceGroups != null)
+                            {
+                                foreach (ulong dgId in request.DeviceGroups)
+                                {
+                                    //Can user access to the device group.
+                                    if (!superAdmin && !GXDeviceGroupService.CanUserAccessDeviceGroup(Db, adderId, dgId))
+                                    {
+                                        throw new ArgumentException("Access denied.");
+                                    }
+                                    if (dgId == 0)
+                                    {
+                                        GXAmiDeviceGroupDevice g = new GXAmiDeviceGroupDevice();
+                                        g.DeviceGroupID = dgId;
+                                        g.DeviceID = it.Id;
+                                        g.Added = DateTime.Now.ToUniversalTime();
+                                        Db.Insert(g);
+                                        events.Add(new GXEventsItem(ActionTargets.DeviceGroup, Actions.Edit, dgId));
+                                    }
+                                }
+                            }
+                            //Get Added time.
+#if !SS4
+                            GXAmiDevice orig = Db.GetById<GXAmiDevice>(it.Id);
+#else
+                            GXAmiDevice orig = Db.SingleById<GXAmiDevice>(it.Id);
+#endif                            
+                            it.Added = orig.Added;
+                            Db.Update(it);
+                            events.Add(new GXEventsItem(ActionTargets.Device, Actions.Edit, it));
+                        }
+                        //Bind user groups to the device groups.
                         if (request.DeviceGroups != null)
                         {
                             foreach (ulong dgId in request.DeviceGroups)
                             {
-                                //Can user access to the device group.
-                                if (!superAdmin && !GXDeviceGroupService.CanUserAccessDeviceGroup(Db, adderId, dgId))
+                                string query = string.Format("SELECT DeviceID FROM " +
+                                    GuruxAMI.Server.AppHost.GetTableName<GXAmiDeviceGroupDevice>(Db) +
+                                    "WHERE DeviceID = {0} AND DeviceGroupID = {1}", it.Id, dgId);
+                                if (Db.Select<GXAmiUserGroupDeviceGroup>(query).Count == 0)
                                 {
-                                    throw new ArgumentException("Access denied.");
-                                }
-                                if (dgId == 0)
-                                {
-                                    GXAmiDeviceGroupDevice g = new GXAmiDeviceGroupDevice();
-                                    g.DeviceGroupID = dgId;
-                                    g.DeviceID = it.Id;
-                                    g.Added = DateTime.Now.ToUniversalTime();
-                                    Db.Insert(g);
+                                    GXAmiDeviceGroupDevice item = new GXAmiDeviceGroupDevice();
+                                    item.DeviceGroupID = dgId;
+                                    item.DeviceID = it.Id;
+                                    item.Added = DateTime.Now.ToUniversalTime();
+                                    Db.Insert<GXAmiUserGroupDeviceGroup>();
+                                    events.Add(new GXEventsItem(ActionTargets.Device, Actions.Edit, it));
                                     events.Add(new GXEventsItem(ActionTargets.DeviceGroup, Actions.Edit, dgId));
                                 }
                             }
                         }
-                        //Get Added time.
-                        GXAmiDevice orig = Db.GetById<GXAmiDevice>(it.Id);
-                        it.Added = orig.Added;
-                        Db.Update(it);
-                        events.Add(new GXEventsItem(ActionTargets.Device, Actions.Edit, it));
-                    }                    
-                    //Bind user groups to the device groups.
-                    if (request.DeviceGroups != null)
-                    {
-                        foreach (ulong dgId in request.DeviceGroups)
+                        ///////////////////////////////////////////////
+                        //Update device parameters.
+                        UpdateParameters(Db, it.Id, it.Id, it.Parameters, newDevice);
+
+                        //Update device Media Settings.
+                        Db.Delete<GXAmiDeviceMedia>(q => q.DeviceId == it.Id);
+                        foreach(GXAmiDeviceMedia m in it.Medias)
                         {
-                            string query = string.Format("SELECT DeviceID FROM " +
-                                GuruxAMI.Server.AppHost.GetTableName<GXAmiDeviceGroupDevice>(Db) +
-                                "WHERE DeviceID = {0} AND DeviceGroupID = {1}", it.Id, dgId);
-                            if (Db.Select<GXAmiUserGroupDeviceGroup>(query).Count == 0)
+                            m.DeviceId = it.Id;
+                            Db.Insert<GXAmiDeviceMedia>(m);
+                        }
+
+                        ///////////////////////////////////////////////
+                        //Update categories
+                        if (it.Categories == null)
+                        {
+                            GXAmiCategoryTemplate[] tmp22 = Db.Select<GXAmiCategoryTemplate>(q => q.DeviceID == it.ProfileId).ToArray();
+                            List<GXAmiCategory> categories = new List<GXAmiCategory>();
+                            foreach (GXAmiCategoryTemplate tmp in tmp22)
                             {
-                                GXAmiDeviceGroupDevice item = new GXAmiDeviceGroupDevice();
-                                item.DeviceGroupID = dgId;
-                                item.DeviceID = it.Id;
-                                item.Added = DateTime.Now.ToUniversalTime();
-                                Db.Insert<GXAmiUserGroupDeviceGroup>();
-                                events.Add(new GXEventsItem(ActionTargets.Device, Actions.Edit, it));
-                                events.Add(new GXEventsItem(ActionTargets.DeviceGroup, Actions.Edit, dgId));
+                                GXAmiCategory cat = tmp.ToCategory();
+                                cat.DeviceID = it.Id;
+                                Db.Insert(cat);
+                                categories.Add(cat);
+                                cat.Parameters = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == tmp.Id).ToArray();
+                                UpdateParameters(Db, it.Id, cat.Id, cat.Parameters, true);
+                                GXAmiPropertyTemplate[] tmp23 = Db.Select<GXAmiPropertyTemplate>(q => q.ParentID == tmp.Id).ToArray();
+                                List<GXAmiProperty> properties = new List<GXAmiProperty>();
+                                foreach (GXAmiPropertyTemplate tmp2 in tmp23)
+                                {
+                                    GXAmiProperty p = tmp2.ToProperty();
+                                    p.ParentID = cat.Id;
+                                    p.DeviceID = it.Id;
+                                    Db.Insert(p);
+                                    p.Parameters = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == tmp2.Id).ToArray();
+                                    UpdateParameters(Db, it.Id, p.Id, p.Parameters, true);
+                                    properties.Add(p);
+                                }
+                                cat.Properties = properties.ToArray();
+                            }
+                            it.Categories = categories.ToArray();
+                        }
+                        else
+                        {
+                            foreach (GXAmiCategory cat in it.Categories)
+                            {
+                                //User can change category so it is not updated. Db.Update(cat);                            
+                                //Update category parameters.
+                                UpdateParameters(Db, cat.Id, cat.Id, cat.Parameters, false);
+                                //Update properties
+                                foreach (GXAmiProperty p in cat.Properties)
+                                {
+                                    //User can change property so it is not updated. Db.Update(p);
+                                    //Update property parameters.
+                                    UpdateParameters(Db, p.Id, p.Id, p.Parameters, false);
+                                }
+                            }
+                        }
+                        ///////////////////////////////////////////////
+                        //Update tables
+                        if (it.Tables == null)
+                        {
+                            GXAmiDataTableTemplate[] tmp22 = Db.Select<GXAmiDataTableTemplate>(q => q.DeviceID == it.ProfileId).ToArray();
+                            List<GXAmiDataTable> tables = new List<GXAmiDataTable>();
+                            foreach (GXAmiDataTableTemplate tmp in tmp22)
+                            {
+                                GXAmiDataTable table = tmp.ToTable();
+                                table.DeviceID = it.Id;
+                                Db.Insert(table);
+                                tables.Add(table);
+                                table.Parameters = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == tmp.Id).ToArray();
+                                UpdateParameters(Db, it.Id, table.Id, table.Parameters, true);
+                                GXAmiPropertyTemplate[] tmp23 = Db.Select<GXAmiPropertyTemplate>(q => q.ParentID == tmp.Id).ToArray();
+                                List<GXAmiProperty> properties = new List<GXAmiProperty>();
+                                foreach (GXAmiPropertyTemplate tmp2 in tmp23)
+                                {
+                                    GXAmiProperty p = tmp2.ToProperty();
+                                    p.ParentID = table.Id;
+                                    p.DeviceID = it.Id;
+                                    Db.Insert(p);
+                                    p.Parameters = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == tmp2.Id).ToArray();
+                                    UpdateParameters(Db, it.Id, p.Id, p.Parameters, true);
+                                    properties.Add(p);
+                                }
+                                table.Columns = properties.ToArray();
+                            }
+                            it.Tables = tables.ToArray();
+                        }
+                        else
+                        {
+                            foreach (GXAmiDataTable table in it.Tables)
+                            {
+                                //User can change table so it is not updated. Db.Update(table);
+                                //Update category parameters.
+                                UpdateParameters(Db, table.Id, table.Id, table.Parameters, false);
+                                //Update properties
+                                foreach (GXAmiProperty p in table.Columns)
+                                {
+                                    //User can change category so it is not updated. Db.Update(p);
+                                    //Update property parameters.
+                                    UpdateParameters(Db, p.Id, p.Id, p.Parameters, false);
+                                }
                             }
                         }
                     }
-                    ///////////////////////////////////////////////
-                    //Update device parameters.
-                    UpdateParameters(Db, it.Id, it.Id, it.Parameters, false);
-                    
-                    ///////////////////////////////////////////////
-                    //Update categories
-                    if (it.Categories == null)
-                    {
-                        GXAmiCategoryTemplate[] tmp22 = Db.Select<GXAmiCategoryTemplate>(q => q.DeviceID == it.TemplateId).ToArray();                        
-                        List<GXAmiCategory> categories = new List<GXAmiCategory>();
-                        foreach (GXAmiCategoryTemplate tmp in tmp22)
-                        {
-                            GXAmiCategory cat = tmp.ToCategory();
-                            cat.DeviceID = it.Id;
-                            Db.Insert(cat);
-                            categories.Add(cat);
-                            cat.Parameters = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == tmp.Id).ToArray();
-                            UpdateParameters(Db, it.Id, cat.Id, cat.Parameters, true);
-                            GXAmiPropertyTemplate[] tmp23 = Db.Select<GXAmiPropertyTemplate>(q => q.ParentID == tmp.Id).ToArray();
-                            List<GXAmiProperty> properties = new List<GXAmiProperty>();
-                            foreach (GXAmiPropertyTemplate tmp2 in tmp23)
-                            {
-                                GXAmiProperty p = tmp2.ToProperty();
-                                p.ParentID = cat.Id;
-                                p.DeviceID = it.Id;
-                                Db.Insert(p);
-                                p.Parameters = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == tmp2.Id).ToArray();
-                                UpdateParameters(Db, it.Id, p.Id, p.Parameters, true);
-                                properties.Add(p);
-                            }
-                            cat.Properties = properties.ToArray();
-                        }
-                        it.Categories = categories.ToArray();
-                    }
-                    else
-                    {
-                        foreach (GXAmiCategory cat in it.Categories)
-                        {
-                            //User can change category so it is not updated. Db.Update(cat);                            
-                            //Update category parameters.
-                            UpdateParameters(Db, cat.Id, cat.Id, cat.Parameters, false);
-                            //Update properties
-                            foreach (GXAmiProperty p in cat.Properties)
-                            {
-                                //User can change property so it is not updated. Db.Update(p);
-                                //Update property parameters.
-                                UpdateParameters(Db, p.Id, p.Id, p.Parameters, false);
-                            }
-                        }
-                    }
-                    ///////////////////////////////////////////////
-                    //Update tables
-                    if (it.Tables == null)
-                    {
-                        GXAmiTableTemplate[] tmp22 = Db.Select<GXAmiTableTemplate>(q => q.DeviceID == it.TemplateId).ToArray();
-                        List<GXAmiDataTable> tables = new List<GXAmiDataTable>();
-                        foreach (GXAmiTableTemplate tmp in tmp22)
-                        {
-                            GXAmiDataTable table = tmp.ToTable();
-                            table.DeviceID = it.Id;
-                            Db.Insert(table);
-                            tables.Add(table);
-                            table.Parameters = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == tmp.Id).ToArray();
-                            UpdateParameters(Db, it.Id, table.Id, table.Parameters, true);
-                            GXAmiPropertyTemplate[] tmp23 = Db.Select<GXAmiPropertyTemplate>(q => q.ParentID == tmp.Id).ToArray();
-                            List<GXAmiProperty> properties = new List<GXAmiProperty>();
-                            foreach (GXAmiPropertyTemplate tmp2 in tmp23)
-                            {
-                                GXAmiProperty p = tmp2.ToProperty();
-                                p.ParentID = table.Id;
-                                p.DeviceID = it.Id;
-                                Db.Insert(p);
-                                p.Parameters = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == tmp2.Id).ToArray();
-                                UpdateParameters(Db, it.Id, p.Id, p.Parameters, true);
-                                properties.Add(p);
-                            }
-                            table.Columns = properties.ToArray();
-                        }
-                        it.Tables = tables.ToArray();
-                    }
-                    else
-                    {
-                        foreach (GXAmiDataTable table in it.Tables)
-                        {
-                            //User can change table so it is not updated. Db.Update(table);
-                            //Update category parameters.
-                            UpdateParameters(Db, table.Id, table.Id, table.Parameters, false);
-                            //Update properties
-                            foreach (GXAmiProperty p in table.Columns)
-                            {
-                                //User can change category so it is not updated. Db.Update(p);
-                                //Update property parameters.
-                                UpdateParameters(Db, p.Id, p.Id, p.Parameters, false);
-                            }
-                        }
-                    }
+                    trans.Commit();
                 }
-                trans.Commit();
-                AppHost host = this.ResolveService<AppHost>();
-                host.SetEvents(Db, this.Request, adderId, events);
             }
+            AppHost host = this.ResolveService<AppHost>();
+            host.SetEvents(Db, this.Request, adderId, events);
             return new GXDeviceUpdateResponse(request.Devices);
         }
 
         static public List<GXAmiDevice> GetDevices(IAuthSession s, IDbConnection Db, long userId, long userGroupId, ulong deviceGroupId, ulong deviceID, bool removed)
+        {
+            return GetDevices(s, Db, userId, userGroupId, deviceGroupId, deviceID, removed, null, SearchOperator.None, SearchType.All);
+        }
+
+        static public List<GXAmiDevice> GetDevices(IAuthSession s, IDbConnection Db, long userId, long userGroupId, ulong deviceGroupId, ulong deviceID, bool removed, string[] search, SearchOperator searchOperator, SearchType searchType)
         {
             string id = s.Id;
             bool admin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
@@ -315,12 +351,10 @@ namespace GuruxAMI.Service
                     GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroupUser>(Db));
                 if (!removed)
                 {
-                    Filter.Add(string.Format("{0}.Removed IS NULL AND {1}.Removed IS NULL AND {2}.Removed IS NULL AND {3}.Removed IS NULL",
+                    Filter.Add(string.Format("{0}.Removed IS NULL AND {1}.Removed IS NULL AND {2}.Removed IS NULL",
                         GuruxAMI.Server.AppHost.GetTableName<GXAmiDevice>(Db),
                         GuruxAMI.Server.AppHost.GetTableName<GXAmiDeviceGroup>(Db),
-                        GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroupDeviceGroup>(Db),
-                        GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroup>(Db),
-                        GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroupUser>(Db)));
+                        GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroup>(Db)));
                 }
                 if (userId != 0)
                 {
@@ -343,16 +377,98 @@ namespace GuruxAMI.Service
             {
                 Filter.Add("Removed IS NULL");
             }
+
+            if (search != null)
+            {
+                List<string> searching = new List<string>();
+                //searchOperator, SearchType searchType
+                foreach (string it in search)
+                {
+                    if ((searchType & SearchType.Name) != 0)
+                    {
+                        string tmp = string.Format("{0}.Name Like('%{1}%')",
+                            GuruxAMI.Server.AppHost.GetTableName<GXAmiDevice>(Db), it);
+                        searching.Add(tmp);
+                    }
+                    if ((searchType & SearchType.Description) != 0)
+                    {
+                        string tmp = string.Format("{0}.Description Like('%{1}%')",
+                            GuruxAMI.Server.AppHost.GetTableName<GXAmiDevice>(Db), it);
+                        searching.Add(tmp);
+                    }
+                }
+                if ((searchOperator & SearchOperator.And) != 0)
+                {
+                    Filter.Add("(" + string.Join(" AND ", searching.ToArray()) + ")");
+                }
+                if ((searchOperator & SearchOperator.Or) != 0)
+                {
+                    Filter.Add("(" + string.Join(" OR ", searching.ToArray()) + ")");
+                }
+            }
             if (deviceID != 0)
             {
-                Filter.Add("DeviceID = " + deviceID.ToString());
+                Filter.Add(GuruxAMI.Server.AppHost.GetTableName<GXAmiDevice>(Db) + ".ID = " + deviceID.ToString());
             }
             if (Filter.Count != 0)
             {
                 query += "WHERE ";
                 query += string.Join(" AND ", Filter.ToArray());
             }
-            return Db.Select<GXAmiDevice>(query);
+            List<GXAmiDevice> list = Db.Select<GXAmiDevice>(query);            
+            return list;
+        }
+
+        /// <summary>
+        /// Get possible values for the parameters.
+        /// </summary>
+        /// <param name="Db"></param>
+        /// <param name="parameters"></param>
+        static void UpdateParameterValues(IDbConnection Db, GXAmiParameter[] parameters)
+        {
+            //Get possible values for the parameter.
+            foreach (GXAmiParameter param in parameters)
+            {
+                param.Values = Db.Select<GXAmiValueItem>(q => q.ParameterId == param.Id).ToArray();
+            }
+        }
+        internal static void UpdateContent(IDbConnection Db, GXAmiDevice it, DeviceContentType content)
+        {
+            if (content == DeviceContentType.All)
+            {
+                //Get device template id.
+                it.ProfileGuid = Db.Select<GXAmiDeviceProfile>(q => q.Id == it.ProfileId)[0].Guid;
+                it.Parameters = Db.Select<GXAmiParameter>(q => q.ParentID == it.Id).ToArray();
+                UpdateParameterValues(Db, it.Parameters);
+                it.Categories = Db.Select<GXAmiCategory>(q => q.DeviceID == it.Id).ToArray();
+                foreach (GXAmiCategory cat in it.Categories)
+                {
+                    cat.Parameters = Db.Select<GXAmiParameter>(q => q.ParentID == cat.Id).ToArray();
+                    UpdateParameterValues(Db, it.Parameters);
+                    cat.Properties = Db.Select<GXAmiProperty>(q => q.ParentID == cat.Id).ToArray();
+                    foreach (GXAmiProperty p in cat.Properties)
+                    {
+                        p.Parameters = Db.Select<GXAmiParameter>(q => q.ParentID == p.Id).ToArray();
+                        UpdateParameterValues(Db, it.Parameters);
+                    }
+                }
+                it.Tables = Db.Select<GXAmiDataTable>(q => q.DeviceID == it.Id).ToArray();
+                foreach (GXAmiDataTable table in it.Tables)
+                {
+                    table.Parameters = Db.Select<GXAmiParameter>(q => q.ParentID == table.Id).ToArray();
+                    UpdateParameterValues(Db, it.Parameters);
+                    table.Columns = Db.Select<GXAmiProperty>(q => q.ParentID == table.Id).ToArray();
+                    foreach (GXAmiProperty p in table.Columns)
+                    {
+                        p.Parameters = Db.Select<GXAmiParameter>(q => q.ParentID == p.Id).ToArray();
+                        UpdateParameterValues(Db, it.Parameters);
+                    }
+                }
+            }
+            //Get Media settings.            
+            string query = "SELECT * FROM DeviceMedia WHERE DeviceId = " + it.Id.ToString();
+            List<GXAmiDeviceMedia> list2 = Db.Select<GXAmiDeviceMedia>(query);            
+            it.Medias = list2.ToArray();
         }
 
         /// <summary>
@@ -362,89 +478,87 @@ namespace GuruxAMI.Service
         /// <returns></returns>
 		public GXDevicesResponse Post(GXDevicesRequest request)
 		{
-            IAuthSession s = this.GetSession(false);
-            List<GXAmiDevice> list;
-            //Returns all devices of the user.
-            if (request.UserID != 0)
+            lock (Db)
             {
-                list = GetDevices(s, Db, request.UserID, 0, 0, 0, request.Removed);
-            }
-            //Returns all devices from the user goup
-            else if (request.UserGroupID != 0)
-            {
-                list = GetDevices(s, Db, 0, request.UserGroupID, 0, 0, request.Removed);
-            }
-            //Returns all devices from the device goup
-            else if (request.DeviceGroupID != 0)
-            {
-                list = GetDevices(s, Db, 0, 0, request.DeviceGroupID, 0, request.Removed);
-            }
-            //Returns device
-            else if (request.DeviceID != 0)
-            {
-                list = GetDevices(s, Db, 0, 0, 0, request.DeviceID, request.Removed);
-            }
-            //Returns all devices from the DC.
-            else if (request.DataCollectorId != 0)
-            {
-                string query = string.Format("SELECT DISTINCT {0}.* FROM {0} INNER JOIN {1} ON {0}.ID = {1}.DeviceID WHERE DataCollectorID = {2} AND Removed IS NULL",
-                GuruxAMI.Server.AppHost.GetTableName<GXAmiDevice>(Db),
-                GuruxAMI.Server.AppHost.GetTableName<GXAmiDataCollectorDevice>(Db),
-                request.DataCollectorId);
-                list = Db.Select<GXAmiDevice>(query);
-            }
-            //Return all devices.
-            else
-            {
-                list = GetDevices(s, Db, 0, 0, 0, 0, request.Removed);
-            }
-            foreach (GXAmiDevice it in list)
-            {
-                it.Parameters = Db.Select<GXAmiParameter>(q => q.ParentID == it.Id).ToArray();
-                if (request.Content)
+                IAuthSession s = this.GetSession(false);
+                List<GXAmiDevice> list;
+                //Returns all devices of the user.
+                if (request.UserID != 0)
                 {
-                    it.Categories = Db.Select<GXAmiCategory>(q => q.DeviceID == it.Id).ToArray();
-                    foreach (GXAmiCategory cat in it.Categories)
-                    {
-                        cat.Parameters = Db.Select<GXAmiParameter>(q => q.ParentID == cat.Id).ToArray();
-                        cat.Properties = Db.Select<GXAmiProperty>(q => q.ParentID == cat.Id).ToArray();
-                        foreach (GXAmiProperty p in cat.Properties)
-                        {
-                            p.Parameters = Db.Select<GXAmiParameter>(q => q.ParentID == p.Id).ToArray();
-                        }
-                    }
-                    it.Tables = Db.Select<GXAmiDataTable>(q => q.DeviceID == it.Id).ToArray();
-                    foreach (GXAmiDataTable table in it.Tables)
-                    {
-                        table.Parameters = Db.Select<GXAmiParameter>(q => q.ParentID == table.Id).ToArray();
-                        table.Columns = Db.Select<GXAmiProperty>(q => q.ParentID == table.Id).ToArray();
-                        foreach (GXAmiProperty p in table.Columns)
-                        {
-                            p.Parameters = Db.Select<GXAmiParameter>(q => q.ParentID == p.Id).ToArray();
-                        }
-                    }                    
+                    list = GetDevices(s, Db, request.UserID, 0, 0, 0, request.Removed);
                 }
-            }
+                //Returns all devices from the user goup
+                else if (request.UserGroupID != 0)
+                {
+                    list = GetDevices(s, Db, 0, request.UserGroupID, 0, 0, request.Removed);
+                }
+                //Returns all devices from the device goup
+                else if (request.DeviceGroupID != 0)
+                {
+                    list = GetDevices(s, Db, 0, 0, request.DeviceGroupID, 0, request.Removed);
+                }
+                //Returns device
+                else if (request.DeviceID != 0)
+                {
+                    list = GetDevices(s, Db, 0, 0, 0, request.DeviceID, request.Removed);
+                }
+                //Returns all devices that DC can access.
+                else if (request.DataCollectorId != 0)
+                {
+                    string query = string.Format("SELECT DISTINCT {0}.* FROM {0} INNER JOIN {1} ON {0}.ID = {1}.DeviceID WHERE (DataCollectorID IS NULL OR DataCollectorID = {2}) AND Removed IS NULL",
+                    GuruxAMI.Server.AppHost.GetTableName<GXAmiDevice>(Db),
+                    GuruxAMI.Server.AppHost.GetTableName<GXAmiDeviceMedia>(Db),
+                    request.DataCollectorId);
+                    list = Db.Select<GXAmiDevice>(query);
+                }
+                //Return all devices.
+                else
+                {
+                    list = GetDevices(s, Db, 0, 0, 0, 0, request.Removed);                    
+                }
+                //If devices are find by device profile.
+                if (request.DeviceProfileIDs != null && request.DeviceProfileIDs.Length != 0)
+                {
+                    List<ulong> tmp = new List<ulong>(request.DeviceProfileIDs);
+                    for (int pos = 0; pos != list.Count; ++pos)
+                    {
+                        if (tmp.Find(p => p == list[pos].Id) == 0)
+                        {
+                            list.Remove(list[pos]);
+                            --pos;
+                        }
 
-            //Remove excluded devices.
-            if (request.Excluded != null && request.Excluded.Length != 0)
-            {
-                List<ulong> ids = new List<ulong>(request.Excluded);
-                var excludeUserGroups = from c in list where !ids.Contains(c.Id) select c;
-                list = excludeUserGroups.ToList();
-            }
-            //Get devices by range.
-            if (request.Index != 0 || request.Count != 0)
-            {
-                if (request.Count == 0 || request.Index + request.Count > list.Count)
+                    }
+                }                
+
+                //Remove excluded devices.
+                if (request.Excluded != null && request.Excluded.Length != 0)
                 {
-                    request.Count = list.Count - request.Index;
+                    List<ulong> ids = new List<ulong>(request.Excluded);
+                    var excludeUserGroups = from c in list where !ids.Contains(c.Id) select c;
+                    list = excludeUserGroups.ToList();
                 }
-                list.RemoveRange(0, request.Index);
-                var limitUserGroups = list.Take(request.Count);
-                list = limitUserGroups.ToList();
+                //Get devices by range.
+                if (request.Index != 0 || request.Count != 0)
+                {
+                    if (request.Count == 0 || request.Index + request.Count > list.Count)
+                    {
+                        request.Count = list.Count - request.Index;
+                    }
+                    list.RemoveRange(0, request.Index);
+                    var limitUserGroups = list.Take(request.Count);
+                    list = limitUserGroups.ToList();
+                }            
+                
+                if (request.Content != DeviceContentType.Main)
+                {
+                    foreach (GXAmiDevice it in list)
+                    {
+                        UpdateContent(Db, it, request.Content);
+                    }
+                }
+                return new GXDevicesResponse(list.ToArray());
             }
-            return new GXDevicesResponse(list.ToArray());
 		}
 
         /// <summary>
@@ -455,7 +569,7 @@ namespace GuruxAMI.Service
         /// <returns></returns>
         static public bool CanUserAccessDevice(IDbConnection Db, long userId, ulong deviceId)
         {
-            string query = "SELECT {0}.ID FROM {0}";
+            string query = "SELECT COUNT(*) FROM {0}";
             query += "INNER JOIN {1} ON {0}.ID = {1}.DeviceID ";
             query += "INNER JOIN {2} ON {1}.DeviceGroupID = {2}.ID ";
             query += "INNER JOIN {3} ON {2}.ID = {3}.DeviceGroupID ";
@@ -475,7 +589,7 @@ namespace GuruxAMI.Service
                 GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroup>(Db),
                 GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroupUser>(Db),
                 userId, deviceId);
-            return Db.Select<GXAmiDeviceGroup>(query).Count != 0;
+            return Db.SqlScalar<long>(query, null) != 0;
         }
 
 		public GXDeviceDeleteResponse Post(GXDeviceDeleteRequest request)
@@ -495,37 +609,47 @@ namespace GuruxAMI.Service
             List<GXEventsItem> events = new List<GXEventsItem>();
             bool permanently = request.Permanently;
             List<GXAmiDevice> devices = new List<GXAmiDevice>();
-            foreach (ulong it in request.DeviceIDs)
+            lock (Db)
             {
-                if (it == 0)
+                foreach (ulong it in request.DeviceIDs)
                 {
-                    throw new ArgumentException("ID is required");
+                    if (it == 0)
+                    {
+                        throw new ArgumentException("ID is required");
+                    }
+                    if (!superAdmin && !CanUserAccessDevice(Db, id, it))
+                    {
+                        throw new ArgumentException("Access denied.");
+                    }
+#if !SS4
+                    GXAmiDevice device = Db.QueryById<GXAmiDevice>(it);
+#else
+                    GXAmiDevice device = Db.SingleById<GXAmiDevice>(it);
+#endif                   
+                    devices.Add(device);
+                    events.Add(new GXEventsItem(ActionTargets.Device, Actions.Remove, device));
                 }
-                if (!superAdmin && !CanUserAccessDevice(Db, id, it))
-                {
-                    throw new ArgumentException("Access denied.");
-                }
-                GXAmiDevice device = Db.QueryById<GXAmiDevice>(it);
-                devices.Add(device);
-                events.Add(new GXEventsItem(ActionTargets.Device, Actions.Remove, device));    
             }
             //Notify before delete or DC is not notified because device is not found from the DB.
             AppHost host = this.ResolveService<AppHost>();
             host.SetEvents(Db, this.Request, id, events);
-            foreach (GXAmiDevice it in devices)
+            lock (Db)
             {
-                if (permanently)
+                foreach (GXAmiDevice it in devices)
                 {
-                    Db.DeleteById<GXAmiDevice>(it.Id);
-                }
-                else
-                {
-                    it.Removed = DateTime.Now;
-                    Db.UpdateOnly(it, p => p.Removed, p => p.Id == it.Id);
+                    if (permanently)
+                    {
+                        Db.DeleteById<GXAmiDevice>(it.Id);
+                    }
+                    else
+                    {
+                        it.Removed = DateTime.Now.ToUniversalTime();
+                        Db.UpdateOnly(it, p => p.Removed, p => p.Id == it.Id);
+                    }
                 }
             }
-			return new GXDeviceDeleteResponse();
-		}
+            return new GXDeviceDeleteResponse();
+        }
         
         /// <summary>
         /// Get values.
@@ -533,20 +657,23 @@ namespace GuruxAMI.Service
         /// <param name="request"></param>
         /// <returns></returns>
         public GXValuesResponse Post(GXValuesRequest request)
-        {
-            List<GXAmiDataValue> list = new List<GXAmiDataValue>();
-            foreach (ulong it in request.DeviceIDs)
+        {            
+            lock (Db)
             {
-                if (request.LogValues)
+                List<GXAmiDataValue> list = new List<GXAmiDataValue>();
+                foreach (ulong it in request.DeviceIDs)
                 {
-                    list.AddRange(Db.Select<GXAmiLatestValue>(q => q.DeviceID == it).ToArray());
+                    if (request.LogValues)
+                    {
+                        list.AddRange(Db.Select<GXAmiValueLog>(q => q.DeviceID == it).ToArray());
+                    }
+                    else
+                    {
+                        list.AddRange(Db.Select<GXAmiLatestValue>(q => q.DeviceID == it).ToArray());                        
+                    }
                 }
-                else
-                {
-                    list.AddRange(Db.Select<GXAmiValueLog>(q => q.DeviceID == it).ToArray());
-                }
+                return new GXValuesResponse(list.ToArray());
             }
-            return new GXValuesResponse(list.ToArray());
         }
        
         /// <summary>
@@ -602,39 +729,51 @@ namespace GuruxAMI.Service
         /// <returns></returns>
         public GXTableResponse Post(GXTableRequest request)
         {
-            if (request.Type == TableRequestType.RowCount)
+            lock (Db)
             {
-                //Find last row number.
-                SqlExpressionVisitor<GXAmiDataRow> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiDataRow>();
-                ev.Limit(1);
-                ev.Where(q => q.TableID == request.TableId);
-                ev.OrderByDescending(q => q.RowIndex);
-                List<GXAmiDataRow> items = Db.Select<GXAmiDataRow>(ev);
-                if (items.Count == 1)
+                if (request.Type == TableRequestType.RowCount)
                 {
-                    return new GXTableResponse(items[0].RowIndex);                    
+                    //Find last row number.
+#if !SS4
+                    SqlExpressionVisitor<GXAmiDataRow> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiDataRow>();
+
+#else
+                    SqlExpression<GXAmiDataRow> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiDataRow>();
+#endif                                                                
+                    ev.Limit(1);
+                    ev.Where(q => q.TableID == request.TableId);
+                    ev.OrderByDescending(q => q.RowIndex);
+                    List<GXAmiDataRow> items = Db.Select<GXAmiDataRow>(ev);
+                    if (items.Count == 1)
+                    {
+                        return new GXTableResponse(items[0].RowIndex);
+                    }
+                    //Table is empty.
+                    return new GXTableResponse(0);
                 }
-                //Table is empty.
-                return new GXTableResponse(0);                                
-            }
-            else if (request.Type == TableRequestType.Rows)
-            {
-                //We must know columns count to retreave right amount of rows.
-                int cnt = Db.Select<GXAmiProperty>(q => q.ParentID == request.TableId).Count;
-                //Get rows
-                SqlExpressionVisitor<GXAmiDataRow> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiDataRow>();
-                if (request.Count != 0)
+                else if (request.Type == TableRequestType.Rows)
                 {
-                    ev.Limit(cnt * request.Index, cnt * request.Count);
+                    //We must know columns count to retreave right amount of rows.
+                    int cnt = Db.Select<GXAmiProperty>(q => q.ParentID == request.TableId).Count;
+                    //Get rows
+#if !SS4
+                    SqlExpressionVisitor<GXAmiDataRow> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiDataRow>();
+#else
+                    SqlExpression<GXAmiDataRow> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiDataRow>();
+#endif                                                                
+                    if (request.Count != 0)
+                    {
+                        ev.Limit(cnt * request.Index, cnt * request.Count);
+                    }
+                    ev.OrderBy(q => q.RowIndex);
+                    ev.Where(q => q.TableID == request.TableId);
+                    List<GXAmiDataRow> items = Db.Select<GXAmiDataRow>(ev);
+                    ulong tableId;
+                    uint startRow;
+                    return new GXTableResponse(ItemsToRows(items.ToArray(), out tableId, out startRow));
                 }
-                ev.OrderBy(q => q.RowIndex);                
-                ev.Where(q => q.TableID == request.TableId);
-                List<GXAmiDataRow> items = Db.Select<GXAmiDataRow>(ev);
-                ulong tableId;
-                uint startRow;
-                return new GXTableResponse(ItemsToRows(items.ToArray(), out tableId, out startRow));
+                throw new ArgumentOutOfRangeException("Type");
             }
-            throw new ArgumentOutOfRangeException("Type");                        
         }         
 
         /// <summary>
@@ -644,77 +783,88 @@ namespace GuruxAMI.Service
         /// <returns></returns>
         public GXValuesUpdateResponse Post(GXValuesUpdateRequest request)
         {
-            if (request.Values != null && request.Values.Length != 0)
+            List<GXEventsItem> events = new List<GXEventsItem>();
+            bool partOfTable = request.Values[0] is GXAmiDataRow;
+            lock (Db)
             {
-                List<GXEventsItem> events = new List<GXEventsItem>();                                
-                bool partOfTable = request.Values[0] is GXAmiDataRow;
-                using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
+                if (request.Values != null && request.Values.Length != 0)
                 {
-                    if (partOfTable)
+                    using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
                     {
-                        uint maxRow = 0;
-                        //Find last row number.
-                        SqlExpressionVisitor<GXAmiDataRow> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiDataRow>();
-                        ev.Limit(1);
-                        ev.Where(q => q.TableID == (request.Values[0]as GXAmiDataRow).TableID);
-                        ev.OrderByDescending(q => q.RowIndex);
-                        List<GXAmiDataRow> items = Db.Select<GXAmiDataRow>(ev);
-                        if (items.Count == 1)
+                        if (partOfTable)
                         {
-                            maxRow = items[0].RowIndex;
-                        }
-                        else
-                        {
-                            maxRow = 0;
-                        }
-                        foreach (GXAmiDataRow it in request.Values)
-                        {                            
-                            //Increase row count.
-                            if (it.RowIndex == 0 && it.ColumnIndex == 0)
+                            uint maxRow = 0;
+                            //Find last row number.
+#if !SS4
+                            SqlExpressionVisitor<GXAmiDataRow> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiDataRow>();
+#else
+                            SqlExpression<GXAmiDataRow> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiDataRow>();
+#endif                                                                
+                            ev.Limit(1);
+                            ev.Where(q => q.TableID == (request.Values[0] as GXAmiDataRow).TableID);
+                            ev.OrderByDescending(q => q.RowIndex);
+                            List<GXAmiDataRow> items = Db.Select<GXAmiDataRow>(ev);
+                            if (items.Count == 1)
                             {
-                                ++maxRow;
-                            }
-                            it.TimeStamp = DateTime.Now;
-                            if (it.RowIndex == 0)
-                            {
-                                it.RowIndex = maxRow;
-                                Db.Insert(it);
-                                it.Id = (ulong) Db.GetLastInsertId();
+                                maxRow = items[0].RowIndex;
                             }
                             else
                             {
-                                Db.Update(it);
+                                maxRow = 0;
                             }
-                            events.Add(new GXEventsItem(ActionTargets.TableValueChanged, Actions.Add, it));
-                        }                        
-                    }
-                    else
-                    {
-                        foreach (GXAmiDataValue it in request.Values)
-                        {
-                            //Delete old value from latest value.
-                            Db.Delete<GXAmiLatestValue>(q => q.Id == it.PropertyID);
-                            GXAmiLatestValue v = new GXAmiLatestValue();
-                            v.TimeStamp = DateTime.Now;
-                            v.PropertyID = it.PropertyID;
-                            ulong mask = 0xFFFF;
-                            v.DeviceID = v.PropertyID & ~mask;
-                            v.UIValue = it.UIValue;
-                            GXAmiValueLog lv = new GXAmiValueLog();
-                            lv.PropertyID = it.PropertyID;
-                            lv.DeviceID = v.DeviceID;
-                            lv.UIValue = v.UIValue;
-                            lv.TimeStamp = v.TimeStamp;
-                            Db.Insert(v);
-                            Db.Insert(lv);
-                            events.Add(new GXEventsItem(ActionTargets.ValueChanged, Actions.Add, v));
+                            foreach (GXAmiDataRow it in request.Values)
+                            {
+                                //Increase row count.
+                                if (it.RowIndex == 0 && it.ColumnIndex == 0)
+                                {
+                                    ++maxRow;
+                                }
+                                it.TimeStamp = DateTime.Now;
+                                if (it.RowIndex == 0)
+                                {
+                                    it.RowIndex = maxRow;
+                                    Db.Insert(it);
+#if !SS4
+                                    it.Id = (ulong) Db.GetLastInsertId();
+#else
+                                    it.Id = (ulong) Db.LastInsertId();
+#endif                                    
+                                }
+                                else
+                                {
+                                    Db.Update(it);
+                                }
+                                events.Add(new GXEventsItem(ActionTargets.TableValueChanged, Actions.Add, it));
+                            }
                         }
+                        else
+                        {
+                            foreach (GXAmiDataValue it in request.Values)
+                            {
+                                //Delete old value from latest value.
+                                Db.Delete<GXAmiLatestValue>(q => q.Id == it.PropertyID);
+                                GXAmiLatestValue v = new GXAmiLatestValue();
+                                v.TimeStamp = DateTime.Now;
+                                v.PropertyID = it.PropertyID;
+                                ulong mask = 0xFFFF;
+                                v.DeviceID = v.PropertyID & ~mask;
+                                v.UIValue = it.UIValue;
+                                GXAmiValueLog lv = new GXAmiValueLog();
+                                lv.PropertyID = it.PropertyID;
+                                lv.DeviceID = v.DeviceID;
+                                lv.UIValue = v.UIValue;
+                                lv.TimeStamp = v.TimeStamp;
+                                Db.Insert(v);
+                                Db.Insert(lv);
+                                events.Add(new GXEventsItem(ActionTargets.ValueChanged, Actions.Add, v));
+                            }
+                        }
+                        trans.Commit();
                     }
-                    trans.Commit();
                 }
-                AppHost host = this.ResolveService<AppHost>();
-                host.SetEvents(Db, this.Request, 0, events);
             }
+            AppHost host = this.ResolveService<AppHost>();
+            host.SetEvents(Db, this.Request, 0, events);
             return new GXValuesUpdateResponse();
         }
 
@@ -726,12 +876,19 @@ namespace GuruxAMI.Service
         public GXDeviceStateUpdateResponse Put(GXDeviceStateUpdateRequest request)
         {
             List<GXEventsItem> events = new List<GXEventsItem>();
-            foreach (var it in request.States)
+            lock (Db)
             {
-                GXAmiDevice device = Db.GetById<GXAmiDevice>(it.Key);
-                device.State = it.Value;
-                Db.UpdateOnly(device, p => p.StatesAsInt, p => p.Id == it.Key);
-                events.Add(new GXEventsItem(ActionTargets.Device, Actions.State, device));
+                foreach (var it in request.States)
+                {
+#if !SS4
+                    GXAmiDevice device = Db.GetById<GXAmiDevice>(it.Key);
+#else
+                    GXAmiDevice device = Db.SingleById<GXAmiDevice>(it.Key);
+#endif                                                                            
+                    device.State = it.Value;
+                    Db.UpdateOnly(device, p => p.StatesAsInt, p => p.Id == it.Key);
+                    events.Add(new GXEventsItem(ActionTargets.Device, Actions.State, device));
+                }
             }
             AppHost host = this.ResolveService<AppHost>();
             host.SetEvents(Db, this.Request, 0, events);

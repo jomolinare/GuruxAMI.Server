@@ -38,18 +38,25 @@ using GuruxAMI.Common;
 using GuruxAMI.Common.Messages;
 using GuruxAMI.Service;
 using ServiceStack.OrmLite;
+#if !SS4
 using ServiceStack.ServiceHost;
+using ServiceStack.Common.Web;
+#else    
+using ServiceStack.Web;
+using ServiceStack;
+#endif
 
 namespace GuruxAMI.Server
 {    
     class AppHost
     {
+#if !SS4                
         /// <summary>
         /// Get IP address of the client.
         /// </summary>
         /// <param name="con"></param>
         /// <returns></returns>
-        public static string GetIPAddress(ServiceStack.ServiceHost.IRequestContext con)
+        public static string GetIPAddress(IRequestContext con)
         {
             string add = null;
             var httpReq = con.Get<ServiceStack.ServiceHost.IHttpRequest>();
@@ -65,17 +72,18 @@ namespace GuruxAMI.Server
             }
             return add;
         }                
+#endif
         
         /// <summary>
         /// 
         /// </summary>
-        internal List<GXSession> Events = new List<GXSession>();
+        internal List<GXSession> Sessions = new List<GXSession>();
 
-        GXSession GetSession(Guid listenerGuid)
+        GXSession GetSession(Guid session)
         {
-            foreach (GXSession it in Events)
+            foreach (GXSession it in Sessions)
             {
-                if (it.ListenerGuid == listenerGuid)
+                if (it.Session == session)
                 {
                     return it;
                 }
@@ -85,7 +93,7 @@ namespace GuruxAMI.Server
 
         public void RemoveEvent(Guid listenerGuid, Guid guid)
         {
-            lock (Events)
+            lock (Sessions)
             {
                 GXSession session = GetSession(listenerGuid);
                 if (session != null)
@@ -103,7 +111,7 @@ namespace GuruxAMI.Server
                     if (session.NotifyClients.Count == 0)
                     {
                         session.Received.Set();
-                        Events.Remove(session);
+                        Sessions.Remove(session);
                     }
                 }
                 else
@@ -120,7 +128,7 @@ namespace GuruxAMI.Server
         /// <param name="e"></param>
         public void AddEvent(Guid listenerGuid, GXEvent e)
         {
-            lock (Events)
+            lock (Sessions)
             {
                 GXSession session = GetSession(listenerGuid);
                 if (session != null)
@@ -128,7 +136,7 @@ namespace GuruxAMI.Server
                     //Check that we are not listen this client.
                     foreach (GXEvent e1 in session.NotifyClients)
                     {
-                        if (e1.DataCollectorGuid == e.DataCollectorGuid)
+                        if (e1.Instance == e.Instance)
                         {
                             session.NotifyClients.Remove(e1);
                             break;
@@ -138,27 +146,71 @@ namespace GuruxAMI.Server
                 }
                 else
                 {
-                    GXSession ses = new GXSession(listenerGuid);
-                    Events.Add(ses);
+                    GXSession ses = new GXSession(e.Instance);
+                    Sessions.Add(ses);
                     ses.NotifyClients.Add(e);
                 }
             }
         }
 
-        public GuruxAMI.Common.Messages.GXEventsItem[] WaitEvents(Guid listenerGuid, out Guid guid)
+        /// <summary>
+        /// Check is DC already registered.
+        /// </summary>
+        /// <param name="guid"></param>
+        /// <returns></returns>
+        public bool IsDCRegistered(Guid guid)
+        {
+            //If this is user, not DC.
+            if (guid == Guid.Empty)
+            {
+                return false;
+            }
+            lock (Sessions)
+            {
+                foreach (GXSession it in Sessions)
+                {
+                    foreach (GXEvent e in it.NotifyClients)
+                    {
+                        if (e.DataCollectorGuid == guid)
+                        {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }
+        }
+
+        public GuruxAMI.Common.Messages.GXEventsItem[] WaitEvents(IDbConnection Db, Guid listenerGuid, out Guid guid)
         {
             //Wait until event occurs.            
             GXSession session;
-            lock (Events)
+            lock (Sessions)
             {
                 session = GetSession(listenerGuid);
                 //If session not found. This is happening when DC is connected to the server and
                 //Server is restarted.
                 if (session == null)
                 {
-                    throw new System.Net.WebException("", System.Net.WebExceptionStatus.RequestCanceled);
+                    guid = Guid.Empty;
+                    return new GuruxAMI.Common.Messages.GXEventsItem[0];
+                    //TODO: Check is this better. throw new System.Net.WebException("", System.Net.WebExceptionStatus.RequestCanceled);
                 }
                 session.Received.Set();
+                //Update DC last request time stamp.
+                foreach (GXEvent it in session.NotifyClients)
+                {
+                    if (it.DataCollectorGuid != Guid.Empty)
+                    {
+                        lock (Db)
+                        {
+                            GXAmiDataCollector item = Db.Select<GXAmiDataCollector>(q => q.Guid == it.DataCollectorGuid)[0];
+                            item.LastRequestTimeStamp = DateTime.Now.ToUniversalTime();
+                            Db.UpdateOnly(item, p => p.LastRequestTimeStamp, p => p.Guid == it.DataCollectorGuid);
+                        }
+                    }
+                }
+
                 //Search if there are new events that are occurred when client is executed previous action.
                 bool found = false;
                 foreach (GXEvent it in session.NotifyClients)
@@ -176,14 +228,14 @@ namespace GuruxAMI.Server
                 }
             }
             session.Received.WaitOne();
-            lock (Events)
+            lock (Sessions)
             {
                 //Search occurred event.
                 foreach (GXEvent it in session.NotifyClients)
                 {
                     if (it.Rows.Count != 0)
                     {
-                        guid = it.DataCollectorGuid;
+                        guid = it.Instance;
                         GuruxAMI.Common.Messages.GXEventsItem[] rows = it.Rows.ToArray();
                         it.Rows.Clear();
                         return rows;
@@ -204,8 +256,8 @@ namespace GuruxAMI.Server
         void HandleValueUpdated(IDbConnection Db, GXAmiLatestValue value, GXEventsItem e)
         {
             ulong mask = (ulong)((int)e.Target << 16 | (int)e.Action);
-            //Find is anyone interested from this user event.            
-            foreach (GXSession it in Events)
+            //Find is anyone interested from this user event.
+            foreach (GXSession it in Sessions)
             {
                 foreach (GXEvent e1 in it.NotifyClients)
                 {
@@ -226,7 +278,7 @@ namespace GuruxAMI.Server
         {
             ulong mask = (ulong)((int)e.Target << 16 | (int)e.Action);
             //Find is anyone interested from this user event.            
-            foreach (GXSession it in Events)
+            foreach (GXSession it in Sessions)
             {
                 foreach (GXEvent e1 in it.NotifyClients)
                 {
@@ -242,11 +294,11 @@ namespace GuruxAMI.Server
                 }
             }
         }
-        void HandleUser(IDbConnection Db, GXAmiUser user, GXEventsItem e)
+        void HandleUser(GXAmiUser user, GXEventsItem e)
         {
             ulong mask = (ulong)((int)e.Target << 16 | (int)e.Action);
             //Find is anyone interested from this user event.            
-            foreach (GXSession it in Events)
+            foreach (GXSession it in Sessions)
             {
                 foreach (GXEvent e1 in it.NotifyClients)
                 {
@@ -267,17 +319,20 @@ namespace GuruxAMI.Server
         {
             ulong mask = (ulong)((int)e.Target << 16 | (int)e.Action);
             //Find is anyone interested from this user group event.
-            foreach (GXSession it in Events)
+            lock (Db)
             {
-                foreach (GXEvent e1 in it.NotifyClients)
+                foreach (GXSession it in Sessions)
                 {
-                    if (e1.UserID != 0 && (mask & e1.Mask) != 0)
+                    foreach (GXEvent e1 in it.NotifyClients)
                     {
-                        //Notify only super admin and if user has access to the user group.
-                        if (e1.SuperAdmin || GXUserGroupService.CanAccess(Db, e1.UserID, group.Id))
+                        if (e1.UserID != 0 && (mask & e1.Mask) != 0)
                         {
-                            e1.Rows.Add(e);
-                            it.Received.Set();
+                            //Notify only super admin and if user has access to the user group.
+                            if (e1.SuperAdmin || GXUserGroupService.CanAccess(Db, e1.UserID, group.Id))
+                            {
+                                e1.Rows.Add(e);
+                                it.Received.Set();
+                            }
                         }
                     }
                 }
@@ -288,23 +343,26 @@ namespace GuruxAMI.Server
         {
             ulong mask = (ulong)((int)e.Target << 16 | (int)e.Action);
             //Find is anyone interested from this device event.            
-            foreach (GXSession it in Events)
+            lock (Db)
             {
-                foreach (GXEvent e1 in it.NotifyClients)
+                foreach (GXSession it in Sessions)
                 {
-                    if (e1.UserID != 0 && (mask & e1.Mask) != 0)
+                    foreach (GXEvent e1 in it.NotifyClients)
                     {
-                        //Notify only super admin and if user has access to this device.
-                        if (e1.SuperAdmin || GXDeviceService.CanUserAccessDevice(Db, e1.UserID, deviceId))
+                        if (e1.UserID != 0 && (mask & e1.Mask) != 0)
+                        {
+                            //Notify only super admin and if user has access to this device.
+                            if (e1.SuperAdmin || GXDeviceService.CanUserAccessDevice(Db, e1.UserID, deviceId))
+                            {
+                                e1.Rows.Add(e);
+                                it.Received.Set();
+                            }
+                        }
+                        else if (e1.DataCollectorGuid != Guid.Empty && GXDataCollectorService.CanDataCollectorsAccessDevice(Db, deviceId, e1.DataCollectorGuid))
                         {
                             e1.Rows.Add(e);
                             it.Received.Set();
                         }
-                    }
-                    else if (e1.DataCollectorGuid != Guid.Empty && GXDataCollectorService.CanDataCollectorsAccessDevice(Db, deviceId, e1.DataCollectorGuid))
-                    {
-                        e1.Rows.Add(e);
-                        it.Received.Set();
                     }
                 }
             }
@@ -314,17 +372,20 @@ namespace GuruxAMI.Server
         {
             ulong mask = (ulong)((int)e.Target << 16 | (int)e.Action);
             //Find is anyone interested from this device group event.            
-            foreach (GXSession it in Events)
+            lock (Db)
             {
-                foreach (GXEvent e1 in it.NotifyClients)
+                foreach (GXSession it in Sessions)
                 {
-                    if (e1.UserID != 0 && (mask & e1.Mask) != 0)
+                    foreach (GXEvent e1 in it.NotifyClients)
                     {
-                        //Notify only super admin and if user has access to this device group.
-                        if (e1.SuperAdmin || GXDeviceGroupService.CanUserAccessDeviceGroup(Db, e1.UserID, group.Id))
+                        if (e1.UserID != 0 && (mask & e1.Mask) != 0)
                         {
-                            e1.Rows.Add(e);
-                            it.Received.Set();
+                            //Notify only super admin and if user has access to this device group.
+                            if (e1.SuperAdmin || GXDeviceGroupService.CanUserAccessDeviceGroup(Db, e1.UserID, group.Id))
+                            {
+                                e1.Rows.Add(e);
+                                it.Received.Set();
+                            }
                         }
                     }
                 }
@@ -344,12 +405,14 @@ namespace GuruxAMI.Server
                 task.TargetType == TargetType.Table || task.TargetType == TargetType.Property) &&
                 dataCollectorGuid != Guid.Empty)
             {
-                string query = string.Format("SELECT DataCollector.* FROM {0} INNER JOIN {1} ON {0}.ID = {1}.DataCollectorID WHERE {1}.DeviceID = {2} AND Guid = \"{3}\" ",
-                    GuruxAMI.Server.AppHost.GetTableName<GXAmiDataCollector>(Db),
-                    GuruxAMI.Server.AppHost.GetTableName<GXAmiDataCollectorDevice>(Db),
-                    task.TargetDeviceID, dataCollectorGuid.ToString().Replace("-", ""));
-                List<GXAmiDataCollector> list = Db.Select<GXAmiDataCollector>(query);
-                return list.Count == 1;
+                string query = string.Format("SELECT COUNT(*) FROM {0} WHERE Disabled = FALSE AND DeviceID = {1} AND (DataCollectorId = {2} OR DataCollectorId IS NULL)",
+                    GuruxAMI.Server.AppHost.GetTableName<GXAmiDeviceMedia>(Db),
+                    task.TargetDeviceID,
+                    task.DataCollectorID);
+                lock (Db)
+                {
+                    return Db.SqlScalar<long>(query, null) != 0;
+                }
             }
             return false;
         }
@@ -358,7 +421,38 @@ namespace GuruxAMI.Server
         {
             ulong mask = (ulong)((int)e.Target << 16 | (int)e.Action);
             //Find is anyone interested from this data collector event.            
-            foreach (GXSession it in Events)
+            lock (Db)
+            {
+                foreach (GXSession it in Sessions)
+                {
+                    foreach (GXEvent e1 in it.NotifyClients)
+                    {
+                        if (e1.UserID != 0 && (mask & e1.Mask) != 0)
+                        {
+                            //Notify only super admin or if user has access to this data collector.
+                            if (e1.SuperAdmin)//TODO: || GXDeviceGroupService.CanUserAccessDeviceGroup(Db, e1.UserID, group.Id))
+                            {
+                                e1.Rows.Add(e);
+                                it.Received.Set();
+                            }
+                        }
+                        //Notify DC that trace state is change.
+                        else if (e.Action == Actions.Edit && e.Target == ActionTargets.Trace &&
+                                e1.DataCollectorGuid == guid)
+                        {
+                            e1.Rows.Add(e);
+                            it.Received.Set();
+                        }
+                    }
+                }
+            }
+        }
+
+        void HandleSchedules(GXAmiSchedule schedule, GXEventsItem e)
+        {
+            ulong mask = (ulong)((int)e.Target << 16 | (int)e.Action);
+            //Find is anyone interested from this data collector event.            
+            foreach (GXSession it in Sessions)
             {
                 foreach (GXEvent e1 in it.NotifyClients)
                 {
@@ -371,33 +465,37 @@ namespace GuruxAMI.Server
                             it.Received.Set();
                         }
                     }
-                    //Notify DC that trace state is change.
+                        /* TODO:
+                    //Notify DC that Schedule is added.
                     else if (e.Action == Actions.Edit && e.Target == ActionTargets.Trace &&
-                            e1.DataCollectorGuid == guid)
+                            e1.DataCollectorGuid == schedule.datac)
                     {
                         e1.Rows.Add(e);
                         it.Received.Set();
                     }
+                         * */
                 }
             }
         }
-
 
         void HandleDeviceErrors(IDbConnection Db, GXAmiDeviceError error, GXEventsItem e)
         {
             ulong mask = (ulong)((int)e.Target << 16 | (int)e.Action);
             //Find is anyone interested from this data collector event.            
-            foreach (GXSession it in Events)
+            lock (Db)
             {
-                foreach (GXEvent e1 in it.NotifyClients)
+                foreach (GXSession it in Sessions)
                 {
-                    if (e1.UserID != 0 && (mask & e1.Mask) != 0)
+                    foreach (GXEvent e1 in it.NotifyClients)
                     {
-                        //Notify only super admin or if user has access to this data collector.
-                        if (e1.SuperAdmin || GXDeviceService.CanUserAccessDevice(Db, e1.UserID, error.TargetDeviceID))
+                        if (e1.UserID != 0 && (mask & e1.Mask) != 0)
                         {
-                            e1.Rows.Add(e);
-                            it.Received.Set();
+                            //Notify only super admin or if user has access to this data collector.
+                            if (e1.SuperAdmin || GXDeviceService.CanUserAccessDevice(Db, e1.UserID, error.TargetDeviceID.Value))
+                            {
+                                e1.Rows.Add(e);
+                                it.Received.Set();
+                            }
                         }
                     }
                 }
@@ -405,16 +503,16 @@ namespace GuruxAMI.Server
         }
 
         /// <summary>
-        /// Notify from new device templates.
+        /// Notify from new device profile.
         /// </summary>
         /// <param name="Db"></param>
         /// <param name="template"></param>
         /// <param name="e"></param>
-        void HandleDeviceTemplates(IDbConnection Db, GXAmiDeviceTemplate template, GXEventsItem e)
+        void HandleDeviceProfiles(GXAmiDeviceProfile template, GXEventsItem e)
         {
             ulong mask = (ulong)((int)e.Target << 16 | (int)e.Action);
             //Find is anyone interested from this device template event.            
-            foreach (GXSession it in Events)
+            foreach (GXSession it in Sessions)
             {
                 foreach (GXEvent e1 in it.NotifyClients)
                 {
@@ -440,16 +538,59 @@ namespace GuruxAMI.Server
         void HandleTasks(IDbConnection Db, GXAmiTask task, GXEventsItem e)
         {
             ulong mask = (ulong)((int)e.Target << 16 | (int)e.Action);
-            Db.Insert<GXAmiTaskLog>(new GXAmiTaskLog(task));
-            foreach (GXSession it in Events)
+            lock (Db)
+            {
+                if (task.State == TaskState.Pending)
+                {
+                    GXAmiTaskLog it = new GXAmiTaskLog(task);
+                    Db.Insert<GXAmiTaskLog>(it);
+                    if (it.Data != null)
+                    {
+                        foreach (string value in GXTaskService.SplitByLength(it.Data, 255))
+                        {
+                            GXAmiTaskLogData d = new GXAmiTaskLogData();
+                            d.TaskId = it.Id;
+                            d.Data = value;
+                            Db.Insert(d);
+                        }
+                    }
+                }
+                //DC is claimed the task.
+                else if (task.State == TaskState.Processing)
+                {
+                    GXAmiTaskLog it = Db.GetById<GXAmiTaskLog>(task.Id);
+                    it.ClaimTime = task.ClaimTime;
+                    Db.UpdateOnly(it, p => p.ClaimTime, q => q.Id == task.Id);
+                }
+                else //Task is finished (succeeded or failed)
+                {
+                    GXAmiTaskLog it = Db.GetById<GXAmiTaskLog>(task.Id);
+                    it.FinishTime = DateTime.Now.ToUniversalTime();
+                    Db.UpdateOnly(it, p => p.FinishTime, q => q.Id == task.Id);                    
+                }
+            }
+            foreach (GXSession it in Sessions)
             {
                 foreach (GXEvent e1 in it.NotifyClients)
                 {
                     if ((mask & e1.Mask) != 0)
                     {
-                        //Tark modifier DC is not notified.
-                        if (task.SenderDataCollectorGuid != Guid.Empty &&
-                            e1.DataCollectorGuid == task.SenderDataCollectorGuid)
+                        //Do not notify task sender.
+                        if (task.State == TaskState.Pending && e1.Instance == task.Instance)
+                        {
+                            continue;
+                        }
+                        //Do not notify sender DC.
+                        if (task.State == TaskState.Processing && e1.DataCollectorGuid == task.DataCollectorGuid)
+                        {
+                            continue;
+                        }
+                        //Do not notify other DCs for task success or fail.
+                        if ((task.State == TaskState.Succeeded ||
+                            task.State == TaskState.Failed ||
+                            task.State == TaskState.Timeout) &&
+                            e1.DataCollectorGuid != Guid.Empty && 
+                            e1.DataCollectorGuid != task.DataCollectorGuid)
                         {
                             continue;
                         }
@@ -459,13 +600,9 @@ namespace GuruxAMI.Server
                             //If device is read notify DCs that owns the device.
                             IsDeviceConnectedToDC(Db, task, e1.DataCollectorGuid))
                         {
-                            if (e1.UserID != 0)
+                            if (e1.DataCollectorGuid != Guid.Empty)
                             {
-                                System.Diagnostics.Debug.WriteLine("Notify user " + e1.UserID.ToString() + " from task : " + task.Id.ToString());
-                            }
-                            else
-                            {
-                                System.Diagnostics.Debug.WriteLine("Notify DC " + e1.DataCollectorGuid.ToString() + " from task : " + task.Id.ToString());
+                                System.Diagnostics.Debug.WriteLine("Server notifies: " + task.TaskType.ToString() + " " + task.State.ToString() + " DC: " + e1.DataCollectorGuid.ToString());
                             }
                             e1.Rows.Add(e);
                             it.Received.Set();
@@ -475,28 +612,34 @@ namespace GuruxAMI.Server
             }
         }
 
+#if !SS4
         public void SetEvents(IDbConnection Db, IHttpRequest request, long userId, List<GXEventsItem> events)
+#else
+        public void SetEvents(IDbConnection Db, IRequest request, long userId, List<GXEventsItem> events)
+#endif                
         {
-            string add = null;
             //If proxy is used.
-            add = request.Headers[ServiceStack.Common.Web.HttpHeaders.XForwardedFor];
+            string add = request.Headers[HttpHeaders.XForwardedFor];
             //Get IP Address.
             if (add == null)
             {
                 add = request.UserHostAddress;
             }
-            lock (Events)
+            lock (Sessions)
             {
                 foreach (GXEventsItem e in events)
                 {
                     if (userId != 0)
                     {
-                        GXAmiUserActionLog a = new GXAmiUserActionLog(userId, e.Target, e.Action, add);
-                        Db.Insert(a);
+                        lock(Db)
+                        {
+                            GXAmiUserActionLog a = new GXAmiUserActionLog(userId, e.Target, e.Action, add);
+                            Db.Insert(a);
+                        }
                     }
                     if (e.Target == ActionTargets.User)
                     {
-                        HandleUser(Db, e.Data as GXAmiUser, e);
+                        HandleUser(e.Data as GXAmiUser, e);
                     }
                     else if (e.Target == ActionTargets.UserGroup)
                     {
@@ -530,9 +673,13 @@ namespace GuruxAMI.Server
                     {
                         HandleDeviceErrors(Db, e.Data as GXAmiDeviceError, e);
                     }
-                    else if (e.Target == ActionTargets.DeviceTemplate)
+                    else if (e.Target == ActionTargets.DeviceProfile)
                     {
-                        HandleDeviceTemplates(Db, e.Data as GXAmiDeviceTemplate, e);
+                        HandleDeviceProfiles(e.Data as GXAmiDeviceProfile, e);
+                    }
+                    else if (e.Target == ActionTargets.Schedule)
+                    {
+                        HandleSchedules(e.Data as GXAmiSchedule, e);
                     }
                     else if (e.Target == ActionTargets.Trace)
                     {

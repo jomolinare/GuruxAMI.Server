@@ -34,10 +34,18 @@ using System;
 using System.Reflection;
 using Funq;
 using ServiceStack.OrmLite;
+#if !SS4
 using ServiceStack.ServiceHost;
 using ServiceStack.ServiceInterface;
 using ServiceStack.ServiceInterface.Auth;
 using ServiceStack.WebHost.Endpoints;
+#else
+using ServiceStack;
+using ServiceStack.Web;
+using ServiceStack.Host;
+using ServiceStack.Data;
+using ServiceStack.Auth;
+#endif
 
 namespace GuruxAMI.Server
 {

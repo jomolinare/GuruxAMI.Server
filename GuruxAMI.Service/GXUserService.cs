@@ -31,7 +31,6 @@
 //---------------------------------------------------------------------------
 
 using GuruxAMI.Common.Messages;
-using ServiceStack.ServiceInterface;
 using GuruxAMI.Common;
 using System.Collections.Generic;
 using System.Data;
@@ -39,8 +38,14 @@ using ServiceStack.OrmLite;
 using System;
 using System.Xml.Linq;
 using System.Linq;
-using ServiceStack.ServiceInterface.Auth;
 using GuruxAMI.Server;
+#if !SS4
+using ServiceStack.ServiceInterface;
+using ServiceStack.ServiceInterface.Auth;
+#else
+using ServiceStack;
+using ServiceStack.Auth;
+#endif
 
 namespace GuruxAMI.Service
 {
@@ -48,99 +53,113 @@ namespace GuruxAMI.Service
     /// Service handles user functionality.
     /// </summary>    
     [Authenticate()]
+#if !SS4
     internal class GXUserService : ServiceStack.ServiceInterface.Service
+#else
+    internal class GXUserService : ServiceStack.Service
+#endif
 	{
         /// <summary>
         /// Add or update new user.
         /// </summary>		
         public GXUserUpdateResponse Put(GXUserUpdateRequest request)
 		{
-            using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
+            List<GXEventsItem> events = new List<GXEventsItem>();
+            IAuthSession s = this.GetSession(false);
+            bool edit = GuruxAMI.Server.GXBasicAuthProvider.CanUserEdit(s);
+            bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
+            long adderId = Convert.ToInt64(s.Id);
+            lock (Db)
             {
-                List<GXEventsItem> events = new List<GXEventsItem>();
-                IAuthSession s = this.GetSession(false);
-                bool edit = GuruxAMI.Server.GXBasicAuthProvider.CanUserEdit(s);
-                bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
-                long adderId = Convert.ToInt64(s.Id);
-                //Add new users            
-                foreach (GXAmiUser it in request.Users)
+                using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
                 {
-                    if (string.IsNullOrEmpty(it.Name))
+                    //Add new users            
+                    foreach (GXAmiUser it in request.Users)
                     {
-                        throw new ArgumentException("Invalid name.");
-                    }
-                    //If new user
-                    if (it.Id == 0)
-                    {
-                        //User can't add new users.
-                        if (!edit)
+                        if (string.IsNullOrEmpty(it.Name))
                         {
-                            throw new ArgumentException("Access denied.");
+                            throw new ArgumentException("Invalid name.");
                         }
-                        if (!superAdmin && (it.AccessRights & UserAccessRights.SuperAdmin) == UserAccessRights.SuperAdmin)
+                        //If new user
+                        if (it.Id == 0)
                         {
-                            throw new ArgumentException("Only super admin can add new super admin.");
-                        }
-                        if (string.IsNullOrEmpty(it.Password))
-                        {
-                            throw new ArgumentException("Invalid Password.");
-                        }
-                        it.Added = DateTime.Now.ToUniversalTime();
-                        Db.Insert(it);
-                        it.Id = Db.GetLastInsertId();
-                        events.Add(new GXEventsItem(ActionTargets.User, Actions.Add, it));
-                    }
-                    else //Update user data.
-                    {
-                        //User can only edit itself.
-                        if (!edit && adderId != it.Id)
-                        {
-                            throw new ArgumentException("Access denied.");
-                        }
-                        if (!superAdmin)
-                        {
-                            //User can't update user data if he do not have access to the user group.
-                            long[] groups1 = GXUserGroupService.GetUserGroups(Db, adderId);
-                            long[] groups2 = GXUserGroupService.GetUserGroups(Db, it.Id);
-                            bool found = false;
-                            foreach (long it1 in groups1)
-                            {
-                                foreach (long it2 in groups2)
-                                {
-                                    if (it1 == it2)
-                                    {
-                                        found = true;
-                                        break;
-                                    }
-                                }
-                                if (found)
-                                {
-                                    break;
-                                }
-                            }
-                            if (!found)
+                            //User can't add new users.
+                            if (!edit)
                             {
                                 throw new ArgumentException("Access denied.");
                             }
+                            if (!superAdmin && (it.AccessRights & UserAccessRights.SuperAdmin) == UserAccessRights.SuperAdmin)
+                            {
+                                throw new ArgumentException("Only super admin can add new super admin.");
+                            }
+                            if (string.IsNullOrEmpty(it.Password))
+                            {
+                                throw new ArgumentException("Invalid Password.");
+                            }
+                            it.Added = DateTime.Now.ToUniversalTime();
+                            Db.Insert(it);
+#if !SS4
+                            it.Id = Db.GetLastInsertId();
+#else
+                            it.Id = Db.LastInsertId();
+#endif
+                            events.Add(new GXEventsItem(ActionTargets.User, Actions.Add, it));
                         }
-                        //Get Added time.
-                        GXAmiUser orig = Db.GetById<GXAmiUser>(it.Id);
-                        it.Added = orig.Added;
-                        if (string.IsNullOrEmpty(it.Password))
+                        else //Update user data.
                         {
-                            it.Password = orig.Password;
+                            //User can only edit itself.
+                            if (!edit && adderId != it.Id)
+                            {
+                                throw new ArgumentException("Access denied.");
+                            }
+                            if (!superAdmin)
+                            {
+                                //User can't update user data if he do not have access to the user group.
+                                long[] groups1 = GXUserGroupService.GetUserGroups(Db, adderId);
+                                long[] groups2 = GXUserGroupService.GetUserGroups(Db, it.Id);
+                                bool found = false;
+                                foreach (long it1 in groups1)
+                                {
+                                    foreach (long it2 in groups2)
+                                    {
+                                        if (it1 == it2)
+                                        {
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                    if (found)
+                                    {
+                                        break;
+                                    }
+                                }
+                                if (!found)
+                                {
+                                    throw new ArgumentException("Access denied.");
+                                }
+                            }
+                            //Get Added time.
+#if !SS4
+                            GXAmiUser orig = Db.GetById<GXAmiUser>(it.Id);
+#else
+                            GXAmiUser orig = Db.SingleById<GXAmiUser>(it.Id);
+#endif                                                        
+                            it.Added = orig.Added;
+                            if (string.IsNullOrEmpty(it.Password))
+                            {
+                                it.Password = orig.Password;
+                            }
+                            Db.Update(it);
+                            events.Add(new GXEventsItem(ActionTargets.User, Actions.Edit, it));
                         }
-                        Db.Update(it);
-                        events.Add(new GXEventsItem(ActionTargets.User, Actions.Edit, it));                        
-                    }                   
+                    }
+                    trans.Commit();
                 }
-                AppHost host = this.ResolveService<AppHost>();
-                host.SetEvents(Db, this.Request, adderId, events);
-                trans.Commit();                
-                return new GXUserUpdateResponse(request.Users);
             }
-
-		}
+            AppHost host = this.ResolveService<AppHost>();
+            host.SetEvents(Db, this.Request, adderId, events);
+            return new GXUserUpdateResponse(request.Users);
+        }
 
         public static List<GXAmiUser> GetUsers(IAuthSession s, IDbConnection Db, long userId, long groupId, bool removed, bool distinct)
         {            
@@ -215,66 +234,69 @@ namespace GuruxAMI.Service
         /// </summary>		
         public GXUsersResponse Post(GXUsersRequest request)
 		{
-            IAuthSession s = this.GetSession(false);
-            List<GXAmiUser> users;
-            //Return info from logged user;            
-            if (request.UserID == -1)
+            lock (Db)
             {
-                int id = Convert.ToInt32(s.Id);
-                if (id == 0)
+                IAuthSession s = this.GetSession(false);
+                List<GXAmiUser> users;
+                //Return info from logged user;            
+                if (request.UserID == -1)
                 {
-                    throw new ArgumentException("Failed to get information from current user. Invalid session ID.");
+                    int id = Convert.ToInt32(s.Id);
+                    if (id == 0)
+                    {
+                        throw new ArgumentException("Failed to get information from current user. Invalid session ID.");
+                    }
+                    users = GetUsers(s, Db, id, 0, false, true);
                 }
-                users = GetUsers(s, Db, id, 0, false, true);
-            }
-            else if (request.UserID != 0)
-            {
-                users = GetUsers(s, Db, request.UserID, 0, request.Removed, true);
-            }
-            //Returns users who can access device.
-            else if (request.DeviceID != 0)
-            {
-                throw new NotImplementedException();
-            }
-            //Returns users who belong to user group.
-            else if (request.UserGroupID != 0)
-            {                
-                bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
-                if (!superAdmin && !GXUserGroupService.CanAccess(Db, Convert.ToInt32(s.Id), request.UserGroupID))
+                else if (request.UserID != 0)
                 {
-                    throw new ArgumentException("Access denied.");
+                    users = GetUsers(s, Db, request.UserID, 0, request.Removed, true);
                 }
-                users = GetUsers(s, Db, 0, request.UserGroupID, request.Removed, true);
-            }
-            else
-            {
-                //Return users who user can see.
-                users = GetUsers(s, Db, 0, 0, request.Removed, true);
-            }
-            //Remove excluded users.
-            if (request.Excluded != null && request.Excluded.Length != 0)
-            {
-                List<long> ids = new List<long>(request.Excluded);
-                var excludeUsers = from c in users where !ids.Contains(c.Id) select c;
-                users = excludeUsers.ToList();
-            }
-            //Get users by range.
-            if (request.Index != 0 || request.Count != 0)
-            {
-                if (request.Count == 0 || request.Index + request.Count > users.Count)
+                //Returns users who can access device.
+                else if (request.DeviceID != 0)
                 {
-                    request.Count = users.Count - request.Index;
+                    throw new NotImplementedException();
                 }
-                users.RemoveRange(0, request.Index);
-                var limitUsers = users.Take(request.Count);
-                users = limitUsers.ToList();
+                //Returns users who belong to user group.
+                else if (request.UserGroupID != 0)
+                {
+                    bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
+                    if (!superAdmin && !GXUserGroupService.CanAccess(Db, Convert.ToInt32(s.Id), request.UserGroupID))
+                    {
+                        throw new ArgumentException("Access denied.");
+                    }
+                    users = GetUsers(s, Db, 0, request.UserGroupID, request.Removed, true);
+                }
+                else
+                {
+                    //Return users who user can see.
+                    users = GetUsers(s, Db, 0, 0, request.Removed, true);
+                }
+                //Remove excluded users.
+                if (request.Excluded != null && request.Excluded.Length != 0)
+                {
+                    List<long> ids = new List<long>(request.Excluded);
+                    var excludeUsers = from c in users where !ids.Contains(c.Id) select c;
+                    users = excludeUsers.ToList();
+                }
+                //Get users by range.
+                if (request.Index != 0 || request.Count != 0)
+                {
+                    if (request.Count == 0 || request.Index + request.Count > users.Count)
+                    {
+                        request.Count = users.Count - request.Index;
+                    }
+                    users.RemoveRange(0, request.Index);
+                    var limitUsers = users.Take(request.Count);
+                    users = limitUsers.ToList();
+                }
+                //Password is not give to the caller. This is a security reason.
+                foreach (GXAmiUser it in users)
+                {
+                    it.Password = null;
+                }
+                return new GXUsersResponse(users.ToArray());
             }
-            //Password is not give to the caller. This is a security reason.
-            foreach (GXAmiUser it in users)
-            {
-                it.Password = null;
-            }
-            return new GXUsersResponse(users.ToArray());
 		}
 
         /// <summary>
@@ -282,8 +304,8 @@ namespace GuruxAMI.Service
         /// </summary>
         /// <param name="request"></param>
         /// <returns></returns>
-		public GXUserDeleteResponse Post(GXUserDeleteRequest request)
-		{
+        public GXUserDeleteResponse Post(GXUserDeleteRequest request)
+        {
             IAuthSession s = this.GetSession(false);
             int id = Convert.ToInt32(s.Id);
             if (id == 0)
@@ -296,87 +318,94 @@ namespace GuruxAMI.Service
             }
             List<GXEventsItem> events = new List<GXEventsItem>();
             bool superAdmin = GuruxAMI.Server.GXBasicAuthProvider.IsSuperAdmin(s);
-            foreach (int it in request.UserIDs)
+            lock (Db)
             {
-                if (it == 0)
+                foreach (int it in request.UserIDs)
                 {
-                    throw new ArgumentException("ID is required");
-                }
-                if (!superAdmin && !GXUserGroupService.CanAccess(Db, id, it))
-                {
-                    throw new ArgumentException("Access denied.");
-                }
-                GXAmiUser user = Db.QueryById<GXAmiUser>(it);
-                //Remove user from the user group.
-                if (request.GroupIDs != null && request.GroupIDs.Length != 0)
-                {
-                    foreach (long gid in request.GroupIDs)
+                    if (it == 0)
                     {
-                        if (!superAdmin)
+                        throw new ArgumentException("ID is required");
+                    }
+                    if (!superAdmin && !GXUserGroupService.CanAccess(Db, id, it))
+                    {
+                        throw new ArgumentException("Access denied.");
+                    }
+#if !SS4
+                    GXAmiUser user = Db.QueryById<GXAmiUser>(it);
+#else
+                    GXAmiUser user = Db.SingleById<GXAmiUser>(it);
+#endif                   
+                    //Remove user from the user group.
+                    if (request.GroupIDs != null && request.GroupIDs.Length != 0)
+                    {
+                        foreach (long gid in request.GroupIDs)
                         {
-                            List<GXAmiUser> list = GetUsers(s, Db, 0, gid, false, false);
-                            if (list.Count == 1)
+                            if (!superAdmin)
                             {
-                                throw new ArgumentException("Remove not allowed.");
+                                List<GXAmiUser> list = GetUsers(s, Db, 0, gid, false, false);
+                                if (list.Count == 1)
+                                {
+                                    throw new ArgumentException("Remove not allowed.");
+                                }
                             }
-                        }
-                        string query = string.Format("UserGroupID = {0} AND UserID = {1}", gid, it);
-                        GXAmiUserGroupUser item = Db.Select<GXAmiUserGroupUser>(query)[0];
-                        if (request.Permanently)
-                        {
+                            string query = string.Format("UserGroupID = {0} AND UserID = {1}", gid, it);
+                            GXAmiUserGroupUser item = Db.Select<GXAmiUserGroupUser>(query)[0];
                             Db.Delete<GXAmiUserGroupUser>(item);
+#if !SS4
+                            GXAmiUserGroup ug = Db.QueryById<GXAmiUserGroup>(gid);
+#else
+                            GXAmiUserGroup ug = Db.SingleById<GXAmiUserGroup>(gid);
+#endif                           
+                            events.Add(new GXEventsItem(ActionTargets.User, Actions.Edit, user));
+                            events.Add(new GXEventsItem(ActionTargets.User, Actions.Edit, ug));
                         }
-                        else
+                    }
+                    else //Remove user.
+                    {
+                        // You can not delete yourself.
+                        if (it == id)
                         {
-                            item.Removed = DateTime.Now;
-                            Db.Update(item);
+                            throw new ArgumentException("Remove not allowed.");
                         }
-                        GXAmiUserGroup ug = Db.QueryById<GXAmiUserGroup>(gid);
-                        events.Add(new GXEventsItem(ActionTargets.User, Actions.Edit, user));
-                        events.Add(new GXEventsItem(ActionTargets.User, Actions.Edit, ug));
-                    }
-                }
-                else //Remove user.
-                {
-                    // You can not delete yourself.
-                    if (it == id)
-                    {
-                        throw new ArgumentException("Remove not allowed.");
-                    }                    
-                    if (request.Permanently)
-                    {
-                        Db.DeleteById<GXAmiUser>(it);
-                    }
-                    else
-                    {
-                        user.Removed = DateTime.Now;
-                        Db.UpdateOnly(user, p => p.Removed, p => p.Id == it);
-                    }
-                    events.Add(new GXEventsItem(ActionTargets.User, Actions.Remove, user));                    
-                    //Remove all user groups of the user.
-                    long[] list = GXUserGroupService.GetUserGroups(Db, it);
-                    
-                    //TODO: Remove only if last user.
-                    foreach (long gid in list)
-                    {
-                        GXAmiUserGroup ug = Db.QueryById<GXAmiUserGroup>(gid);
                         if (request.Permanently)
                         {
-                            Db.DeleteById<GXAmiUserGroup>(gid);
+                            Db.DeleteById<GXAmiUser>(it);
                         }
                         else
                         {
-                            ug.Removed = DateTime.Now;
-                            Db.UpdateOnly(ug, p => p.Removed, p => p.Id == gid);
+                            user.Removed = DateTime.Now.ToUniversalTime();
+                            Db.UpdateOnly(user, p => p.Removed, p => p.Id == it);
                         }
-                        events.Add(new GXEventsItem(ActionTargets.User, Actions.Edit, user));
-                        events.Add(new GXEventsItem(ActionTargets.User, Actions.Edit, ug));
+                        events.Add(new GXEventsItem(ActionTargets.User, Actions.Remove, user));
+                        //Remove all user groups of the user.
+                        long[] list = GXUserGroupService.GetUserGroups(Db, it);
+
+                        //TODO: Remove only if last user.
+                        foreach (long gid in list)
+                        {
+#if !SS4
+                            GXAmiUserGroup ug = Db.QueryById<GXAmiUserGroup>(gid);
+#else
+                            GXAmiUserGroup ug = Db.SingleById<GXAmiUserGroup>(gid);
+#endif                           
+                            if (request.Permanently)
+                            {
+                                Db.DeleteById<GXAmiUserGroup>(gid);
+                            }
+                            else
+                            {
+                                ug.Removed = DateTime.Now.ToUniversalTime();
+                                Db.UpdateOnly(ug, p => p.Removed, p => p.Id == gid);
+                            }
+                            events.Add(new GXEventsItem(ActionTargets.User, Actions.Edit, user));
+                            events.Add(new GXEventsItem(ActionTargets.User, Actions.Edit, ug));
+                        }
                     }
                 }
             }
             AppHost host = this.ResolveService<AppHost>();
             host.SetEvents(Db, this.Request, id, events);
-			return new GXUserDeleteResponse();
-		}
+            return new GXUserDeleteResponse();
+        }
 	}
 }

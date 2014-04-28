@@ -42,7 +42,7 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyCompany("Gurux Ltd")]
 [assembly: AssemblyProduct("GuruxAMI.Server")]
-[assembly: AssemblyCopyright("Copyright (c) 1998-2013 Gurux Ltd. All rights reserved.")]
+[assembly: AssemblyCopyright("Copyright (c) 1998-2014 Gurux Ltd. All rights reserved.")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
 
@@ -62,4 +62,4 @@ using System.Runtime.InteropServices;
 //      Revision
 //
 [assembly: AssemblyVersion("1.1.4.1")]//DO NOT CHANGE!
-[assembly: AssemblyFileVersion("1.1.14.1")]
+[assembly: AssemblyFileVersion("1.1.19.1")]

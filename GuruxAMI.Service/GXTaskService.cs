@@ -31,17 +31,23 @@
 //---------------------------------------------------------------------------
 
 using GuruxAMI.Common.Messages;
-using ServiceStack.ServiceInterface;
 using GuruxAMI.Common;
 using System.Collections.Generic;
 using System.Data;
 using ServiceStack.OrmLite;
 using System;
 using System.Xml.Linq;
-using ServiceStack.ServiceInterface.Auth;
 using GuruxAMI.Server;
 using System.Text;
 using System.Linq;
+
+#if !SS4
+using ServiceStack.ServiceInterface;
+using ServiceStack.ServiceInterface.Auth;
+#else
+using ServiceStack;
+using ServiceStack.Auth;
+#endif
 
 namespace GuruxAMI.Service
 {
@@ -49,7 +55,11 @@ namespace GuruxAMI.Service
     /// Service handles Task functionality.
     /// </summary>
     [Authenticate]
+#if !SS4
     internal class GXTaskService : ServiceStack.ServiceInterface.Service
+#else
+    internal class GXTaskService : ServiceStack.Service
+#endif
     {
         /// <summary>
         /// Can user, add or remove users.
@@ -67,11 +77,12 @@ namespace GuruxAMI.Service
         /// </summary>
         public GXTaskUpdateResponse Put(GXTaskUpdateRequest request)
         {
+            List<GXAmiTask> executedTasks = new List<GXAmiTask>();
+            List<GXEventsItem> events = new List<GXEventsItem>();
+            long adderId = 0;
             lock (Db)
-            {
-                List<GXEventsItem> events = new List<GXEventsItem>();
-                IAuthSession s = this.GetSession(false);
-                long adderId = 0;
+            {                
+                IAuthSession s = this.GetSession(false);                
                 bool superAdmin = false;
                 Guid dcGuid = Guid.Empty;
                 //If failed task adder id DC.
@@ -99,13 +110,17 @@ namespace GuruxAMI.Service
                 //Add tasks.
                 foreach (GXAmiTask it in request.Tasks)
                 {
+                    //If task is already added.
                     if (it.Id != 0)
                     {
                         throw new ArgumentException("Invalid target.");
                     }
                     if (it.TargetID == 0)
                     {
-                        if (it.DataCollectorGuid == Guid.Empty || (it.TaskType != TaskType.MediaOpen &&
+                        if ((it.DataCollectorGuid == Guid.Empty && dcGuid == Guid.Empty) ||
+                            (it.TaskType != TaskType.MediaOpen &&
+                            it.TaskType != TaskType.MediaGetProperty &&
+                            it.TaskType != TaskType.MediaSetProperty &&
                             it.TaskType != TaskType.MediaClose &&
                             it.TaskType != TaskType.MediaWrite &&
                             it.TaskType != TaskType.MediaError &&
@@ -114,86 +129,88 @@ namespace GuruxAMI.Service
                             throw new ArgumentException("Invalid target.");
                         }
                         //Get DC ID
-                        List<GXAmiDataCollector> tmp = Db.Select<GXAmiDataCollector>(q => q.Guid == it.DataCollectorGuid);
+                        List<GXAmiDataCollector> tmp;
+                        if (it.DataCollectorGuid != Guid.Empty)//If target is selected.
+                        {
+                            tmp = Db.Select<GXAmiDataCollector>(q => q.Guid == it.DataCollectorGuid);
+                        }
+                        else//If DC is sending data.
+                        {
+                            tmp = Db.Select<GXAmiDataCollector>(q => q.Guid == dcGuid);
+                        }
                         if (tmp.Count != 1)
                         {
                             throw new ArgumentException("Access denied.");
                         }
+                        /*
+                        if (it.DataCollectorGuid != Guid.Empty)
+                        {
+                            it.TargetID = tmp[0].Id;
+                        }
+                         * */
                         it.TargetID = tmp[0].Id;
+                    }
+                    else //Check that task is not added yet.
+                    {
+                        string query = string.Format("SELECT COUNT(*) FROM {0} WHERE TargetID = {1} AND TaskType = {2}",
+                            GuruxAMI.Server.AppHost.GetTableName<GXAmiTask>(Db), 
+                            it.TargetID,
+                            it.TaskTypeAsInt);
+                        if (Db.SqlScalar<int>(query, null) != 0)
+                        {
+                            continue;
+                        }
                     }
                     //TODO: Check that user has access to the target.                
                     it.State = TaskState.Pending;
                     it.UserID = adderId;
                     it.CreationTime = DateTime.Now;
                     it.SenderDataCollectorGuid = dcGuid;
+                    UpdateTaskTarget(it);
                     events.Add(new GXEventsItem(ActionTargets.Task, Actions.Add, it));
-                    /*
-                    //If DC is added task.
-                    if (adderId == 0)
-                    {
-                        it.SenderDataCollectorGuid = dcGuid;
-                        events.Add(new GXEventsItem(ActionTargets.Task, Actions.Add, it));
-                        using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
-                        {
-                            //Generate new ID here.
-                            it.Id = (int)Settings.GetNewTaskID(Db);
-                            trans.Commit();
-                        }
-                    }
-                    else //If user wants to read device.
-                    {
-                        //Get list of DCs who knows the meter.
-                        string query = string.Format("SELECT {0}.* FROM {0} INNER JOIN {1} ON {0}.ID = {1}.DataCollectorID WHERE {1}.DeviceID = {2}",
-                            GuruxAMI.Server.AppHost.GetTableName<DataCollector>(Db),
-                            GuruxAMI.Server.AppHost.GetTableName<DataCollectorDevice>(Db),
-                            it.TargetDeviceID);
-                        List<DataCollector> list = Db.Select<DataCollector>(query);
-                        //Notify all data collectors that there is a new task available.
-                        using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
-                        {
-                            foreach (DataCollector collector in list)
-                            {
-                                Task task = it.Clone();
-                                task.TargetDeviceID = it.TargetDeviceID;
-                                it.TargetID = it.TargetID;
-                                events.Add(new GXEventsItem(ActionTargets.Task, Actions.Add, task));
-                                //Generate new ID here.
-                                task.Id = (int)Settings.GetNewTaskID(Db);
-
-                            }
-                            trans.Commit();
-                        }
-                    }
-                     * */
-                }
+                    executedTasks.Add(it);
+                }                
                 using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
                 {
-                    foreach (GXAmiTask it in request.Tasks)
+                    foreach (GXAmiTask it in executedTasks)
                     {
+                        //Remove earlier media state change tasks.
+                        if (it.TaskType == TaskType.MediaState)
+                        {
+                            List<GXAmiTask> tmp = Db.Select<GXAmiTask>(q => q.DataCollectorGuid == it.DataCollectorGuid && q.TaskTypeAsInt == (int) TaskType.MediaState);
+                            foreach (GXAmiTask task in tmp)
+                            {
+                                task.State = TaskState.Succeeded;
+                                events.Add(new GXEventsItem(ActionTargets.Task, Actions.Remove, task));
+                            }
+                            Db.Delete<GXAmiTask>(tmp.ToArray());
+                        }
                         Db.Insert(it);
+#if !SS4
                         it.Id = (ulong)Db.GetLastInsertId();
+#else
+                        it.Id = (ulong)Db.LastInsertId();
+#endif
                         if (it.Data != null)
                         {
-                            int index = 0;
                             foreach (string value in SplitByLength(it.Data, 255))
                             {
                                 GXAmiTaskData d = new GXAmiTaskData();
                                 d.TaskId = it.Id;
                                 d.Data = value;
-                                d.Index = ++index;
                                 Db.Insert(d);
                             }
                         }
                     }
                     trans.Commit();
                 }
-                AppHost host = this.ResolveService<AppHost>();
-                host.SetEvents(Db, this.Request, adderId, events);
-                return new GXTaskUpdateResponse(request.Tasks);
             }
+            AppHost host = this.ResolveService<AppHost>();
+            host.SetEvents(Db, this.Request, adderId, events);
+            return new GXTaskUpdateResponse(executedTasks.ToArray());
         }
 
-        static string[] SplitByLength(string str, int maxLength)
+        internal static string[] SplitByLength(string str, int maxLength)
         {
             int cnt = str.Length / maxLength;
             if (str.Length % maxLength != 0)
@@ -209,34 +226,96 @@ namespace GuruxAMI.Service
         }
 
         /// <summary>
+        /// Update sender and target to string so it's easier to show them on UI.
+        /// </summary>
+        /// <param name="task"></param>
+        void UpdateTaskTarget(GXAmiTask task)
+        {           
+            if (string.IsNullOrEmpty(task.SenderAsString))
+            {
+                //Update sender name.
+                if (task.TargetType == TargetType.Device)
+                {
+                    task.SenderAsString = Db.GetById<GXAmiDevice>(task.TargetID).Name;
+                }
+                else if (task.UserID != 0)
+                {
+                    task.SenderAsString = Db.GetById<GXAmiUser>(task.UserID).Name;
+                }
+                else if (task.TargetID != 0 && (task.TargetType == TargetType.DataCollector || task.TargetType == TargetType.Media))
+                {
+                    task.SenderAsString = Db.Select<GXAmiDataCollector>(q => q.Guid == task.DataCollectorGuid)[0].Name;
+                }
+            }
+            //Update target name.
+            if (string.IsNullOrEmpty(task.TargetAsString))
+            {
+                //Update target name.
+                if (task.TargetType == TargetType.Device)
+                {
+                    task.TargetAsString = Db.GetById<GXAmiDevice>(task.TargetID).Name;
+                }               
+                else if (task.TargetID != 0 && (task.TargetType == TargetType.DataCollector || task.TargetType == TargetType.Media))
+                {
+                    task.TargetAsString = Db.GetById<GXAmiDataCollector>(task.TargetID).Name;
+                }
+                else if (task.UserID != 0)
+                {
+                    task.TargetAsString = Db.GetById<GXAmiUser>(task.UserID).Name;
+                }
+            }
+            
+        }
+
+        /// <summary>
         /// Mark task(s) as claimed.
         /// </summary>
         /// <param name="request"></param>
         /// <returns></returns>
         public GXTasksClaimResponse Post(GXTasksClaimRequest request)
         {
-            lock (Db)
+            List<GXEventsItem> events = new List<GXEventsItem>();
+            List<GXClaimedTask> infoList = new List<GXClaimedTask>();
+            AppHost host = this.ResolveService<AppHost>();
+            Guid guid;
+            IAuthSession s = this.GetSession(false);
+            if (!GXBasicAuthProvider.IsGuid(s.UserAuthName, out guid))
             {
-                List<GXEventsItem> events = new List<GXEventsItem>();
-                IAuthSession s = this.GetSession(false);
+                throw new ArgumentException("Access denied.");
+            }
+            lock (Db)
+            {                                
                 DateTime claimTime = DateTime.Now;
-                Guid guid;
-                if (!GXBasicAuthProvider.IsGuid(s.UserAuthName, out guid))
-                {
-                    throw new ArgumentException("Access denied.");
-                }
-                List<GXClaimedTask> infoList = new List<GXClaimedTask>();
                 foreach (ulong it in request.TaskIDs)
                 {
                     GXAmiDataCollector collector = null;
-                    List<GXAmiTask> tasks = Db.Select<GXAmiTask>(q => q.Id == it);
+                    //Try to get wanted task. If that is taken get next available task.
+                    List<GXAmiTask> tasks = Db.Select<GXAmiTask>(q => q.Id == it && q.ClaimTime == null);
                     //Make sure that no one else is has not claim the task.
-                    if (tasks.Count == 1)
+                    GXAmiTask task = null;
+                    bool wantedTask = tasks.Count != 0;
+                    if (wantedTask)
                     {
-                        GXAmiTask task = Db.GetById<GXAmiTask>(it);
-                        task.Data = GetData(it);
+#if !SS4
+                        task = Db.GetById<GXAmiTask>(it);
+#else
+                        task = Db.SingleById<GXAmiTask>(it);
+#endif
+                    }
+                    else
+                    {
+                        tasks = Db.Select<GXAmiTask>(q => q.ClaimTime == null);
+                        if (tasks.Count != 0)
+                        {
+                            task = tasks[0];
+                        }
+                    }                                            
+                    if (task != null)
+                    {
+                        task.Data = GetData(it, false);
+                        task.SenderDataCollectorGuid = guid;
                         //If DC is clamiming the task for it self.
-                        if (task.TargetDeviceID == 0 && task.DataCollectorGuid != Guid.Empty)
+                        if (task.TargetDeviceID == null && task.DataCollectorGuid != Guid.Empty)
                         {
                             //DC can claim only own tasks.
                             if (task.DataCollectorGuid != guid)
@@ -251,43 +330,42 @@ namespace GuruxAMI.Service
                             collector = collectors[0];
                         }
                         else //If DC is claiming device task.
-                        {
-                            string query = string.Format("SELECT {0}.* FROM {0} INNER JOIN {1} ON {0}.ID = {1}.DataCollectorID WHERE DeviceID = {2}",
-                                        GuruxAMI.Server.AppHost.GetTableName<GXAmiDataCollector>(Db),
-                                        GuruxAMI.Server.AppHost.GetTableName<GXAmiDataCollectorDevice>(Db),
-                                        task.TargetDeviceID);
+                        {                            
+                            //Get list of DC that can access Device.
+                            string query = string.Format("SELECT DISTINCT {0}.* FROM {0} INNER JOIN {1} ON ({0}.ID = {1}.DataCollectorId OR {1}.DataCollectorId IS NULL) WHERE DeviceID = {2} AND Guid = '{3}'",
+                                        GuruxAMI.Server.AppHost.GetTableName<GXAmiDataCollector>(Db), 
+                                        GuruxAMI.Server.AppHost.GetTableName<GXAmiDeviceMedia>(Db),
+                                        task.TargetDeviceID.Value,
+                                        guid.ToString().Replace("-", ""));
                             List<GXAmiDataCollector> collectors = Db.Select<GXAmiDataCollector>(query);
-                            foreach (GXAmiDataCollector dc in collectors)
-                            {
-                                if (dc.Guid == guid)
-                                {
-                                    collector = dc;
-                                    break;
-                                }
-                            }
                             //If DC can't access task.
-                            if (collector == null)
+                            if (collectors.Count == 0)
                             {
                                 throw new ArgumentException("Access denied.");
                             }
+                            collector = collectors[0];
                         }
                         //Find device template Guid.
-                        if (task.TargetDeviceID != 0)
+                        if (task.TargetDeviceID != null)
                         {
-                            string query = string.Format("SELECT {0}.* FROM {0} INNER JOIN {1} ON {0}.ID = {1}.TemplateId WHERE {1}.ID = {2}",
-                                GuruxAMI.Server.AppHost.GetTableName<GXAmiDeviceTemplate>(Db),
+                            string query = string.Format("SELECT {0}.* FROM {0} INNER JOIN {1} ON {0}.ID = {1}.ProfileId WHERE {1}.ID = {2}",
+                                GuruxAMI.Server.AppHost.GetTableName<GXAmiDeviceProfile>(Db),
                                 GuruxAMI.Server.AppHost.GetTableName<GXAmiDevice>(Db),
-                                task.TargetDeviceID);
-                            List<GXAmiDeviceTemplate> templates = Db.Select<GXAmiDeviceTemplate>(query);
-                            if (templates.Count != 1)
+                                task.TargetDeviceID.Value);
+                            List<GXAmiDeviceProfile> profiles = Db.Select<GXAmiDeviceProfile>(query);
+                            if (profiles.Count != 1)
                             {
                                 throw new ArgumentException("Access denied.");
                             }
                             GXClaimedTask info = new GXClaimedTask();
-                            info.DeviceTemplate = templates[0].Guid;
+                            if (!wantedTask)
+                            {
+                                info.Task = task;
+                            }
+                            info.DeviceProfile = profiles[0].Guid;
                             query = string.Format("SELECT {0}.* FROM {0} WHERE {0}.ID = {1}",
                                 GuruxAMI.Server.AppHost.GetTableName<GXAmiDevice>(Db),
-                                task.TargetDeviceID);
+                                task.TargetDeviceID.Value);
                             List<GXAmiDevice> devices = Db.Select<GXAmiDevice>(query);
                             if (devices.Count != 1)
                             {
@@ -315,13 +393,19 @@ namespace GuruxAMI.Service
                                     p.Parameters = Db.Select<GXAmiParameter>(q => q.ParentID == p.Id).ToArray();
                                 }
                             }
-                            info.Device.TemplateGuid = templates[0].Guid;
-                            info.Media = devices[0].MediaName;
-                            info.Settings = devices[0].MediaSettings;
+                            info.Device.ProfileGuid = profiles[0].Guid;
+                            List<GXAmiDeviceMedia> Medias = Db.Select<GXAmiDeviceMedia>(q => q.DeviceId == info.Device.Id);
+                            foreach(GXAmiDeviceMedia it2 in Medias)
+                            {
+                                if (it2.DataCollectorId == null || it2.DataCollectorId == collector.Id)
+                                {
+                                    info.MediaSettings.Add(new KeyValuePair<string, string>(it2.Name, it2.Settings));
+                                }
+                            }
                             info.Data = task.Data;
                             infoList.Add(info);
                         }
-                        else //DC is claim the task to itself.
+                        else //DC claims the task to itself.
                         {
                             GXClaimedTask info = new GXClaimedTask();
                             if (task.TargetType == TargetType.Media)
@@ -329,17 +413,31 @@ namespace GuruxAMI.Service
                                 if (task.TaskType == TaskType.MediaOpen ||
                                     task.TaskType == TaskType.MediaClose)
                                 {
-                                    string[] data = task.Data.Split(new string[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries);
-                                    info.Media = data[0];
-                                    info.Settings = data[1];
+                                    string[] data = task.Data.Split(new string[] { Environment.NewLine }, StringSplitOptions.None);
+                                    info.MediaSettings.Clear();
+                                    info.MediaSettings.Add(new KeyValuePair<string, string>(data[0], data[1]));
                                     task.Data = null;
                                 }
                                 else if (task.TaskType == TaskType.MediaWrite)
                                 {
-                                    string[] data = task.Data.Split(new string[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries);
-                                    info.Media = data[0];
-                                    info.Settings = data[1];
+                                    string[] data = task.Data.Split(new string[] { Environment.NewLine }, StringSplitOptions.None);
+                                    info.MediaSettings.Clear();
+                                    info.MediaSettings.Add(new KeyValuePair<string, string>(data[0], data[1]));
                                     task.Data = data[2];
+                                }
+                                else if (task.TaskType == TaskType.MediaGetProperty)
+                                {
+                                    string[] data = task.Data.Split(new string[] { Environment.NewLine }, StringSplitOptions.None);
+                                    info.MediaSettings.Clear();
+                                    info.MediaSettings.Add(new KeyValuePair<string, string>(data[0], data[1]));
+                                    task.Data = data[2];
+                                }
+                                else if (task.TaskType == TaskType.MediaSetProperty)
+                                {
+                                    string[] data = task.Data.Split(new string[] { Environment.NewLine }, StringSplitOptions.None);
+                                    info.MediaSettings.Clear();
+                                    info.MediaSettings.Add(new KeyValuePair<string, string>(data[0], data[1]));
+                                    task.Data = data[2] + Environment.NewLine + data[3];
                                 }
                             }
                             info.DataCollectorID = collector.Id;
@@ -352,14 +450,13 @@ namespace GuruxAMI.Service
                         task.DataCollectorGuid = guid;
                         task.SenderDataCollectorGuid = guid;
                         Db.Update(task);
-                        events.Add(new GXEventsItem(ActionTargets.Task, Actions.Edit, task));
+                        events.Add(new GXEventsItem(ActionTargets.Task, Actions.Edit, task));                        
                     }
                 }
-                //Notify that task is claimed.
-                AppHost host = this.ResolveService<AppHost>();
-                host.SetEvents(Db, this.Request, 0, events);
-                return new GXTasksClaimResponse(infoList.ToArray());
-            }
+            }                        
+            //Notify that task is claimed.                        
+            host.SetEvents(Db, this.Request, 0, events);
+            return new GXTasksClaimResponse(infoList.ToArray());
         }
 
         /// <summary>
@@ -370,7 +467,7 @@ namespace GuruxAMI.Service
         public GXTasksResponse Post(GXTasksRequest request)
         {
             lock (Db)
-            {
+            {                  
                 IAuthSession s = this.GetSession(false);
                 int id = 0;
                 List<GXAmiTask> list = new List<GXAmiTask>();
@@ -396,11 +493,19 @@ namespace GuruxAMI.Service
                                 GXAmiTask task;
                                 if (request.Log)
                                 {
+#if !SS4
                                     task = Db.QueryById<GXAmiTaskLog>(it);
+#else
+                                    task = Db.SingleById<GXAmiTaskLog>(it);
+#endif                                   
                                 }
                                 else
                                 {
+#if !SS4
                                     task = Db.QueryById<GXAmiTask>(it);
+#else
+                                    task = Db.SingleById<GXAmiTask>(it);
+#endif                                   
                                 }
                                 //If task is removed.
                                 if (task != null)
@@ -439,13 +544,28 @@ namespace GuruxAMI.Service
                                     throw new ArgumentException("Access denied. Only task creator or super admin can access task.");
                                 }
                             }
+#if !SS4
+                            SqlExpressionVisitor<GXAmiTask> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTask>();
+#else
+                            SqlExpression<GXAmiTask> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTask>();
+#endif                                                                
                             if (request.State != TaskState.All)
                             {
-                                list.AddRange(Db.Select<GXAmiTask>(q => q.UserID == uid && q.State == request.State));
+                                ev.Where(q => q.UserID == uid);
+                                if (request.Descending)
+                                {
+                                    ev.OrderByDescending(q => q.Id);
+                                }
+                                list.AddRange(Db.Select<GXAmiTask>(ev));
                             }
                             else
                             {
-                                list.AddRange(Db.Select<GXAmiTask>(q => q.UserID == uid));
+                                ev.Where(q => q.UserID == uid && q.State == request.State);
+                                if (request.Descending)
+                                {
+                                    ev.OrderByDescending(q => q.Id);
+                                }
+                                list.AddRange(Db.Select<GXAmiTask>(ev));
                             }
                         }
                     }
@@ -473,23 +593,63 @@ namespace GuruxAMI.Service
                                 {
                                     if (request.Log)
                                     {
-                                        list.AddRange(Db.Select<GXAmiTaskLog>(q => q.UserID == user.Id && q.State == request.State).ToArray());
+#if !SS4
+                                        SqlExpressionVisitor<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTaskLog>();
+#else
+                                        SqlExpression<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTaskLog>();
+#endif                                                                
+                                        ev.Where(q => q.UserID == user.Id && q.State == request.State);
+                                        if (request.Descending)
+                                        {
+                                            ev.OrderByDescending(q => q.Id);
+                                        }
+                                        list.AddRange(Db.Select<GXAmiTaskLog>(ev).ToArray());
                                     }
                                     else
                                     {
-                                        list.AddRange(Db.Select<GXAmiTask>(q => q.UserID == user.Id && q.State == request.State));
+#if !SS4
+                                        SqlExpressionVisitor<GXAmiTask> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTask>();
+#else
+                                        SqlExpression<GXAmiTask> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTask>();
+#endif                                                                
+                                        ev.Where(q => q.UserID == user.Id && q.State == request.State);
+                                        if (request.Descending)
+                                        {
+                                            ev.OrderByDescending(q => q.Id);
+                                        }
+                                        list.AddRange(Db.Select<GXAmiTask>(ev));
                                     }
                                     
                                 }
                                 else
                                 {
                                     if (request.Log)
-                                    {                                        
-                                        list.AddRange(Db.Select<GXAmiTaskLog>(q => q.UserID == user.Id).ToArray());
+                                    {
+#if !SS4
+                                        SqlExpressionVisitor<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTaskLog>();
+#else
+                                        SqlExpression<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTaskLog>();
+#endif                                                                
+                                        ev.Where(q => q.UserID == user.Id);
+                                        if (request.Descending)
+                                        {
+                                            ev.OrderByDescending(q => q.Id);
+                                        }
+                                        list.AddRange(Db.Select<GXAmiTaskLog>(ev).ToArray());
                                     }
                                     else
                                     {
-                                        list.AddRange(Db.Select<GXAmiTask>(q => q.UserID == user.Id));
+#if !SS4
+                                        SqlExpressionVisitor<GXAmiTask> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTask>();
+#else
+                                        SqlExpression<GXAmiTask> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTask>();
+#endif                                                                                                        
+                                        ev.Where(q => q.UserID == user.Id);
+                                        if (request.Descending)
+                                        {
+                                            ev.OrderByDescending(q => q.Id);
+                                        }
+                                        list.AddRange(Db.Select<GXAmiTask>(ev));
                                     }                                    
                                 }
                             }
@@ -512,22 +672,62 @@ namespace GuruxAMI.Service
                             {
                                 if (request.Log)
                                 {
-                                    list.AddRange(Db.Select<GXAmiTaskLog>(q => q.TargetDeviceID == dId && q.State == request.State).ToArray());
+#if !SS4
+                                    SqlExpressionVisitor<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTaskLog>();
+#else
+                                    SqlExpression<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTaskLog>();
+#endif                                                                                                    
+                                    ev.Where(q => q.TargetDeviceID.Value == dId && q.State == request.State);
+                                    if (request.Descending)
+                                    {
+                                        ev.OrderByDescending(q => q.Id);
+                                    }
+                                    list.AddRange(Db.Select<GXAmiTaskLog>(ev).ToArray());
                                 }
                                 else
                                 {
-                                    list.AddRange(Db.Select<GXAmiTask>(q => q.TargetDeviceID == dId && q.State == request.State));
+#if !SS4
+                                    SqlExpressionVisitor<GXAmiTask> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTask>();
+#else
+                                    SqlExpression<GXAmiTask> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTask>();
+#endif                                                                                                    
+                                    ev.Where(q => q.TargetDeviceID.Value == dId && q.State == request.State);
+                                    if (request.Descending)
+                                    {
+                                        ev.OrderByDescending(q => q.Id);
+                                    }
+                                    list.AddRange(Db.Select<GXAmiTask>(ev));
                                 }                                
                             }
                             else
                             {
                                 if (request.Log)
                                 {
-                                    list.AddRange(Db.Select<GXAmiTaskLog>(q => q.TargetDeviceID == dId).ToArray());
+#if !SS4
+                                    SqlExpressionVisitor<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTaskLog>();
+#else
+                                    SqlExpression<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTaskLog>();
+#endif                                                                
+                                    ev.Where(q => q.TargetDeviceID.Value == dId);
+                                    if (request.Descending)
+                                    {
+                                        ev.OrderByDescending(q => q.Id);
+                                    }
+                                    list.AddRange(Db.Select<GXAmiTaskLog>(ev).ToArray());
                                 }
                                 else
                                 {
-                                    list.AddRange(Db.Select<GXAmiTask>(q => q.TargetDeviceID == dId));
+#if !SS4
+                                    SqlExpressionVisitor<GXAmiTask> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTask>();
+#else
+                                    SqlExpression<GXAmiTask> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTask>();
+#endif
+                                    ev.Where(q => q.TargetDeviceID.Value == dId);
+                                    if (request.Descending)
+                                    {
+                                        ev.OrderByDescending(q => q.Id);
+                                    }
+                                    list.AddRange(Db.Select<GXAmiTask>(ev));
                                 }                                
                             }
                         }
@@ -549,22 +749,62 @@ namespace GuruxAMI.Service
                             {
                                 if (request.Log)
                                 {
-                                    list.AddRange(Db.Select<GXAmiTaskLog>(q => q.TargetID == dgId && q.State == request.State).ToArray());
+#if !SS4
+                                    SqlExpressionVisitor<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTaskLog>();
+#else
+                                    SqlExpression<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTaskLog>();
+#endif                                                                
+                                    ev.Where(q => q.TargetID == dgId && q.State == request.State);
+                                    if (request.Descending)
+                                    {
+                                        ev.OrderByDescending(q => q.Id);
+                                    }
+                                    list.AddRange(Db.Select<GXAmiTaskLog>(ev).ToArray());
                                 }
                                 else
                                 {
-                                    list.AddRange(Db.Select<GXAmiTask>(q => q.TargetID == dgId && q.State == request.State));
+#if !SS4
+                                    SqlExpressionVisitor<GXAmiTask> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTask>();
+#else
+                                    SqlExpression<GXAmiTask> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTask>();
+#endif
+                                    ev.Where(q => q.TargetID == dgId && q.State == request.State);
+                                    if (request.Descending)
+                                    {
+                                        ev.OrderByDescending(q => q.Id);
+                                    }
+                                    list.AddRange(Db.Select<GXAmiTask>(ev));
                                 }                                
                             }
                             else
                             {
                                 if (request.Log)
                                 {
-                                    list.AddRange(Db.Select<GXAmiTaskLog>(q => q.TargetID == dgId).ToArray());
+#if !SS4
+                                    SqlExpressionVisitor<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTaskLog>();
+#else
+                                    SqlExpression<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTaskLog>();
+#endif                                                                
+                                    ev.Where(q => q.TargetID == dgId);
+                                    if (request.Descending)
+                                    {
+                                        ev.OrderByDescending(q => q.Id);
+                                    }
+                                    list.AddRange(Db.Select<GXAmiTaskLog>(ev).ToArray());
                                 }
                                 else
                                 {
-                                    list.AddRange(Db.Select<GXAmiTask>(q => q.TargetID == dgId));
+#if !SS4
+                                    SqlExpressionVisitor<GXAmiTask> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTask>();
+#else
+                                    SqlExpression<GXAmiTask> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTask>();
+#endif                                                                
+                                    ev.Where(q => q.TargetID == dgId);
+                                    if (request.Descending)
+                                    {
+                                        ev.OrderByDescending(q => q.Id);
+                                    }
+                                    list.AddRange(Db.Select<GXAmiTask>(ev));
                                 }
                                 
                             }
@@ -578,11 +818,31 @@ namespace GuruxAMI.Service
                             {
                                 if (request.Log)
                                 {
-                                    list.AddRange(Db.Select<GXAmiTaskLog>(q => q.State == request.State).ToArray());
+#if !SS4
+                                    SqlExpressionVisitor<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTaskLog>();
+#else
+                                    SqlExpression<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTaskLog>();
+#endif                                                                
+                                    ev.Where(q => q.State == request.State);
+                                    if (request.Descending)
+                                    {
+                                        ev.OrderByDescending(q => q.Id);
+                                    }
+                                    list.AddRange(Db.Select<GXAmiTaskLog>(ev).ToArray());
                                 }
                                 else
                                 {
-                                    list = Db.Select<GXAmiTask>(q => q.State == request.State);
+#if !SS4
+                                    SqlExpressionVisitor<GXAmiTask> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTask>();
+#else
+                                    SqlExpression<GXAmiTask> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTask>();
+#endif
+                                    ev.Where(q => q.State == request.State);
+                                    if (request.Descending)
+                                    {
+                                        ev.OrderByDescending(q => q.Id);
+                                    }
+                                    list = Db.Select<GXAmiTask>(ev);
                                 }
                                 
                             }
@@ -590,11 +850,29 @@ namespace GuruxAMI.Service
                             {
                                 if (request.Log)
                                 {
-                                    list.AddRange(Db.Select<GXAmiTaskLog>().ToArray());
+#if !SS4
+                                    SqlExpressionVisitor<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTaskLog>();
+#else
+                                    SqlExpression<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTaskLog>();
+#endif                                                                
+                                    if (request.Descending)
+                                    {
+                                        ev.OrderByDescending(q => q.Id);
+                                    }
+                                    list.AddRange(Db.Select<GXAmiTaskLog>(ev).ToArray());
                                 }
                                 else
                                 {
-                                    list = Db.Select<GXAmiTask>();
+#if !SS4
+                                    SqlExpressionVisitor<GXAmiTask> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTask>();
+#else
+                                    SqlExpression<GXAmiTask> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTask>();
+#endif
+                                    if (request.Descending)
+                                    {
+                                        ev.OrderByDescending(q => q.Id);
+                                    }
+                                    list = Db.Select<GXAmiTask>(ev);
                                 }                                
                             }
                         }
@@ -604,11 +882,31 @@ namespace GuruxAMI.Service
                             {
                                 if (request.Log)
                                 {
-                                    list.AddRange(Db.Select<GXAmiTaskLog>(q => q.UserID == id && q.State == request.State).ToArray());
+#if !SS4
+                                    SqlExpressionVisitor<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTaskLog>();
+#else
+                                    SqlExpression<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTaskLog>();
+#endif                                                                
+                                    ev.Where(q => q.UserID == id && q.State == request.State);
+                                    if (request.Descending)
+                                    {
+                                        ev.OrderByDescending(q => q.Id);
+                                    }
+                                    list.AddRange(Db.Select<GXAmiTaskLog>(ev).ToArray());
                                 }
                                 else
                                 {
-                                    list = Db.Select<GXAmiTask>(q => q.UserID == id && q.State == request.State);
+#if !SS4
+                                    SqlExpressionVisitor<GXAmiTask> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTask>();
+#else
+                                    SqlExpression<GXAmiTask> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTask>();
+#endif
+                                    ev.Where(q => q.UserID == id && q.State == request.State);
+                                    if (request.Descending)
+                                    {
+                                        ev.OrderByDescending(q => q.Id);
+                                    }
+                                    list = Db.Select<GXAmiTask>(ev);
                                 }
                                 
                             }
@@ -616,11 +914,31 @@ namespace GuruxAMI.Service
                             {
                                 if (request.Log)
                                 {
-                                    list.AddRange(Db.Select<GXAmiTaskLog>(q => q.UserID == id).ToArray());
+#if !SS4
+                                    SqlExpressionVisitor<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTaskLog>();
+#else
+                                    SqlExpression<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTaskLog>();
+#endif                                                                
+                                    ev.Where(q => q.UserID == id);
+                                    if (request.Descending)
+                                    {
+                                        ev.OrderByDescending(q => q.Id);
+                                    }
+                                    list.AddRange(Db.Select<GXAmiTaskLog>(ev).ToArray());
                                 }
                                 else
                                 {
-                                    list = Db.Select<GXAmiTask>(q => q.UserID == id);
+#if !SS4
+                                    SqlExpressionVisitor<GXAmiTask> ev = OrmLiteConfig.DialectProvider.ExpressionVisitor<GXAmiTask>();
+#else
+                                    SqlExpression<GXAmiTask> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTask>();
+#endif
+                                    ev.Where(q => q.UserID == id);
+                                    if (request.Descending)
+                                    {
+                                        ev.OrderByDescending(q => q.Id);
+                                    }
+                                    list = Db.Select<GXAmiTask>(ev);
                                 }
                                 
                             }
@@ -631,22 +949,23 @@ namespace GuruxAMI.Service
                 {
                     Guid guid = new Guid(s.UserAuthName);
                     //Get device tasks for the DC.
-                    string query = string.Format("SELECT {0}.* FROM {0} INNER JOIN {1} ON {0}.TargetDeviceID = {1}.ID INNER JOIN {2} ON {1}.ID = {2}.DeviceID INNER JOIN {3} ON {2}.DataCollectorID = {3}.ID WHERE {3}.Guid = '{4}'",
-                                GuruxAMI.Server.AppHost.GetTableName<GXAmiTask>(Db),
-                                GuruxAMI.Server.AppHost.GetTableName<GXAmiDevice>(Db),
-                                GuruxAMI.Server.AppHost.GetTableName<GXAmiDataCollectorDevice>(Db),
-                                GuruxAMI.Server.AppHost.GetTableName<GXAmiDataCollector>(Db),
-                                s.UserAuthName.Replace("-", ""));
-                    list = Db.Select<GXAmiTask>(query);
-                    //Get DC Tasks.
+                    string query = "SELECT {0}.* FROM {0} INNER JOIN {1} ON {0}.TargetDeviceID = {1}.ID " +
+                                                "INNER JOIN {2} ON {1}.ID = {2}.DeviceID " +
+                                                "INNER JOIN {3} ON ({2}.DataCollectorID IS NULL OR {2}.DataCollectorID = {3}.ID) " +
+                                                "WHERE ({0}.DataCollectorGuid IS NULL OR {0}.DataCollectorGuid = '{4}') AND {3}.Guid = '{4}'";
                     if (request.State != TaskState.All)
                     {
-                        list.AddRange(Db.Select<GXAmiTask>(q => q.DataCollectorGuid == guid && q.State == request.State));
+                        query += string.Format("AND {0}.State = {1}",
+                                            GuruxAMI.Server.AppHost.GetTableName<GXAmiTask>(Db),
+                                            (int) request.State);
                     }
-                    else
-                    {
-                        list.AddRange(Db.Select<GXAmiTask>(q => q.DataCollectorGuid == guid));
-                    }
+                    query = string.Format(query,
+                                GuruxAMI.Server.AppHost.GetTableName<GXAmiTask>(Db),
+                                GuruxAMI.Server.AppHost.GetTableName<GXAmiDevice>(Db),
+                                GuruxAMI.Server.AppHost.GetTableName<GXAmiDeviceMedia>(Db),
+                                GuruxAMI.Server.AppHost.GetTableName<GXAmiDataCollector>(Db),
+                                s.UserAuthName.Replace("-", ""));
+                    list = Db.Select<GXAmiTask>(query);                    
                 }
                 //Remove excluded users.
                 if (request.Excluded != null && request.Excluded.Length != 0)
@@ -669,15 +988,25 @@ namespace GuruxAMI.Service
 
                 foreach (GXAmiTask it in list)
                 {
-                    it.Data = GetData(it.Id);
+                    it.Data = GetData(it.Id, request.Log);
+                    UpdateTaskTarget(it);
                 }
                 return new GXTasksResponse(list.ToArray());
             }
         }
 
-        string GetData(ulong taskId)
+        string GetData(ulong taskId, bool log)
         {
-            List<GXAmiTaskData> data = Db.Select<GXAmiTaskData>(q => q.TaskId == taskId);
+            List<GXAmiTaskData> data;
+            if (log)
+            {
+                data = new List<GXAmiTaskData>();
+                data.AddRange(Db.Select<GXAmiTaskLogData>(q => q.TaskId == taskId).ToArray());
+            }
+            else
+            {
+                data = Db.Select<GXAmiTaskData>(q => q.TaskId == taskId);
+            }
             if (data.Count == 0)
             {
                 return "";
@@ -697,10 +1026,12 @@ namespace GuruxAMI.Service
         /// <returns></returns>
         public GXTaskDeleteResponse Post(GXTaskDeleteRequest request)
         {
+            long id = 0;
+            List<GXAmiTask> list = new List<GXAmiTask>();
+            List<GXEventsItem> events = new List<GXEventsItem>();
             lock (Db)
             {
                 IAuthSession s = this.GetSession(false);
-                long id = 0;
                 //If failed task adder id DC.
                 bool superAdmin = false;
                 Guid dcGuid = Guid.Empty;
@@ -724,8 +1055,6 @@ namespace GuruxAMI.Service
                         throw new ArgumentException("Access denied.");
                     }
                 }
-                List<GXAmiTask> list = new List<GXAmiTask>();
-                List<GXEventsItem> events = new List<GXEventsItem>();
                 if (request.TaskIDs != null)
                 {
                     foreach (ulong it in request.TaskIDs)
@@ -734,7 +1063,11 @@ namespace GuruxAMI.Service
                         {
                             throw new ArgumentException("Invalid Task ID.");
                         }
+#if !SS4
                         GXAmiTask task = Db.QueryById<GXAmiTask>(it);
+#else
+                        GXAmiTask task = Db.SingleById<GXAmiTask>(it);
+#endif                       
                         //Task might be null if it removed.
                         if (task != null)
                         {
@@ -750,8 +1083,6 @@ namespace GuruxAMI.Service
                                 }
                             }
                             list.Add(task);
-                            task.State = TaskState.Succeeded;
-                            events.Add(new GXEventsItem(ActionTargets.Task, Actions.Remove, task));
                         }
                     }
                 }
@@ -770,11 +1101,7 @@ namespace GuruxAMI.Service
                         }
                         string query = string.Format("SELECT * FROM {0} WHERE UserID = {1}",
                             GuruxAMI.Server.AppHost.GetTableName<GXAmiTask>(Db), uid);
-                        list = Db.Select<GXAmiTask>(query);
-                        foreach (GXAmiTask task in list)
-                        {
-                            events.Add(new GXEventsItem(ActionTargets.Task, Actions.Remove, task));
-                        }
+                        list.AddRange(Db.Select<GXAmiTask>(query));
                     }
                 }
                 //Delete tasks from the user groups.
@@ -795,17 +1122,17 @@ namespace GuruxAMI.Service
                             }
                             string query = string.Format("SELECT * FROM {0} WHERE UserID = {1}",
                                 GuruxAMI.Server.AppHost.GetTableName<GXAmiTask>(Db), user.Id);
-                            list = Db.Select<GXAmiTask>(query);
-                            foreach (GXAmiTask task in list)
-                            {
-                                events.Add(new GXEventsItem(ActionTargets.Task, Actions.Remove, task));
-                            }
+                            list.AddRange(Db.Select<GXAmiTask>(query));
                         }
                     }
                 }
                 //Delete tasks from the device.
-                if (request.UserIDs != null)
+                if (request.DeviceIDs != null && request.DeviceIDs.Length != 0)
                 {
+                    foreach (ulong did in request.DeviceIDs)
+                    {
+                        list.AddRange(Db.Select<GXAmiTask>(q => q.TargetDeviceID.Value == did));
+                    }
                 }
 
                 //Delete tasks from the device groups.
@@ -813,18 +1140,20 @@ namespace GuruxAMI.Service
                 {
                 }
                 using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
-                {
-                    Db.DeleteAll(list.ToArray());
-                    foreach (GXAmiTask it in list)
-                    {
-                        Db.Delete<GXAmiTaskData>(q => q.TaskId == it.Id);
+                {                    
+                    foreach (GXAmiTask task in list)
+                    {                        
+                        task.State = TaskState.Succeeded;
+                        events.Add(new GXEventsItem(ActionTargets.Task, Actions.Remove, task));
                     }
+                    Db.Delete<GXAmiTask>(list.ToArray());
                     trans.Commit();
                 }
-                AppHost host = this.ResolveService<AppHost>();
-                host.SetEvents(Db, this.Request, id, events);
-                return new GXTaskDeleteResponse(list.ToArray());
             }
+            //Notify that task is removed.
+            AppHost host = this.ResolveService<AppHost>();
+            host.SetEvents(Db, this.Request, id, events);
+            return new GXTaskDeleteResponse(list.ToArray());
         }
     }
 }

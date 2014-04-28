@@ -50,10 +50,20 @@ namespace GuruxAMI.Server
         }
 
         /// <summary>
+        /// Instance Guid
+        /// </summary>
+        public Guid Instance
+        {
+            get;
+            set;
+        }
+
+        /// <summary>
         /// Constructor.
         /// </summary>
-        public GXEvent(long userId, bool superAdmin, Guid dataCollectorGuid, ulong mask)
+        public GXEvent(long userId, bool superAdmin, Guid dataCollectorGuid, Guid instance, ulong mask)
         {
+            Instance = instance;
             Mask = mask;
             DataCollectorGuid = dataCollectorGuid;
             SuperAdmin = superAdmin;
