@@ -53,11 +53,7 @@ namespace GuruxAMI.Service
     /// Service handles user functionality.
     /// </summary>    
     [Authenticate()]
-#if !SS4
-    internal class GXUserService : ServiceStack.ServiceInterface.Service
-#else
-    internal class GXUserService : ServiceStack.Service
-#endif
+    internal class GXUserService : GXService
 	{
         /// <summary>
         /// Add or update new user.
@@ -161,7 +157,7 @@ namespace GuruxAMI.Service
             return new GXUserUpdateResponse(request.Users);
         }
 
-        public static List<GXAmiUser> GetUsers(IAuthSession s, IDbConnection Db, long userId, long groupId, bool removed, bool distinct)
+        public static List<GXAmiUser> GetUsers(IAuthSession s, IDbConnection Db, long userId, long groupId, bool removed, bool distinct, string[] search, SearchOperator searchOperator, SearchType searchType)
         {            
             string id = s.Id;
             if (Convert.ToInt32(id) == 0)
@@ -199,6 +195,28 @@ namespace GuruxAMI.Service
             if (groupId != 0)
             {
                 Filter.Add("UserGroupID = " + groupId.ToString());
+            }
+
+            if (search != null)
+            {
+                List<string> searching = new List<string>();
+                foreach (string it in search)
+                {
+                    if ((searchType & SearchType.Name) != 0)
+                    {
+                        string tmp = string.Format("{0}.Name Like('%{1}%')",
+                            GuruxAMI.Server.AppHost.GetTableName<GXAmiUser>(Db), it);
+                        searching.Add(tmp);
+                    }
+                }
+                if ((searchOperator & SearchOperator.And) != 0)
+                {
+                    Filter.Add("(" + string.Join(" AND ", searching.ToArray()) + ")");
+                }
+                if ((searchOperator & SearchOperator.Or) != 0)
+                {
+                    Filter.Add("(" + string.Join(" OR ", searching.ToArray()) + ")");
+                }
             }
             if (Filter.Count != 0)
             {
@@ -246,11 +264,11 @@ namespace GuruxAMI.Service
                     {
                         throw new ArgumentException("Failed to get information from current user. Invalid session ID.");
                     }
-                    users = GetUsers(s, Db, id, 0, false, true);
+                    users = GetUsers(s, Db, id, 0, false, true, null, SearchOperator.None, SearchType.All);
                 }
                 else if (request.UserID != 0)
                 {
-                    users = GetUsers(s, Db, request.UserID, 0, request.Removed, true);
+                    users = GetUsers(s, Db, request.UserID, 0, request.Removed, true, null, SearchOperator.None, SearchType.All);
                 }
                 //Returns users who can access device.
                 else if (request.DeviceID != 0)
@@ -265,12 +283,12 @@ namespace GuruxAMI.Service
                     {
                         throw new ArgumentException("Access denied.");
                     }
-                    users = GetUsers(s, Db, 0, request.UserGroupID, request.Removed, true);
+                    users = GetUsers(s, Db, 0, request.UserGroupID, request.Removed, true, null, SearchOperator.None, SearchType.All);
                 }
                 else
                 {
                     //Return users who user can see.
-                    users = GetUsers(s, Db, 0, 0, request.Removed, true);
+                    users = GetUsers(s, Db, 0, 0, request.Removed, true, null, SearchOperator.None, SearchType.All);
                 }
                 //Remove excluded users.
                 if (request.Excluded != null && request.Excluded.Length != 0)
@@ -342,7 +360,7 @@ namespace GuruxAMI.Service
                         {
                             if (!superAdmin)
                             {
-                                List<GXAmiUser> list = GetUsers(s, Db, 0, gid, false, false);
+                                List<GXAmiUser> list = GetUsers(s, Db, 0, gid, false, false, null, SearchOperator.None, SearchType.All);
                                 if (list.Count == 1)
                                 {
                                     throw new ArgumentException("Remove not allowed.");

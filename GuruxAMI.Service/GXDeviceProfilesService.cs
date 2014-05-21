@@ -58,11 +58,7 @@ namespace GuruxAMI.Service
     /// Service handles device tempate functionality.
     /// </summary>
 	[Authenticate]
-#if !SS4
-    internal class GXDeviceProfileservice : ServiceStack.ServiceInterface.Service
-#else
-    internal class GXDeviceProfileservice : ServiceStack.Service
-#endif    
+    internal class GXDeviceProfileservice : GXService
 	{
         /// <summary>
         /// Load Device Template to own namespace.
@@ -276,7 +272,7 @@ namespace GuruxAMI.Service
         }
 
         /// <summary>
-        /// Add new device template.
+        /// Add new device profile.
         /// </summary>
         /// <param name="request"></param>
         /// <returns></returns>
@@ -311,7 +307,7 @@ namespace GuruxAMI.Service
                         byte[] data;
                         string addInType, assemblyName;
                         List<object[]> items = pc.Import(filename, dir, out data, out assemblyName, out addInType);
-                        ulong DeviceProfilesID = 0;
+                        ulong DeviceProfileID = 0;
                         ulong categoryTemplateID = 0;
                         ulong propertyTemplateID = 0;
                         ulong tableTemplateID = 0;
@@ -338,20 +334,20 @@ namespace GuruxAMI.Service
                             else if (it[1] is GXAmiCategoryTemplate)
                             {
                                 tableTemplateID = 0;
-                                (it[1] as GXAmiCategoryTemplate).DeviceID = DeviceProfilesID;
-                                (it[1] as GXAmiCategoryTemplate).Id += DeviceProfilesID << 16;
+                                (it[1] as GXAmiCategoryTemplate).DeviceID = DeviceProfileID;
+                                (it[1] as GXAmiCategoryTemplate).Id += DeviceProfileID << 16;
                                 (it[1] as GXAmiCategoryTemplate).TemplateVersion = version;
                             }
                             else if (it[1] is GXAmiDataTableTemplate)
                             {
                                 categoryTemplateID = 0;
-                                (it[1] as GXAmiDataTableTemplate).DeviceID = DeviceProfilesID;
-                                (it[1] as GXAmiDataTableTemplate).Id += DeviceProfilesID << 16;
+                                (it[1] as GXAmiDataTableTemplate).DeviceID = DeviceProfileID;
+                                (it[1] as GXAmiDataTableTemplate).Id += DeviceProfileID << 16;
                                 (it[1] as GXAmiDataTableTemplate).TemplateVersion = version;
                             }
                             else if (it[1] is GXAmiPropertyTemplate)
                             {
-                                (it[1] as GXAmiPropertyTemplate).DeviceID = DeviceProfilesID;
+                                (it[1] as GXAmiPropertyTemplate).DeviceID = DeviceProfileID;
                                 (it[1] as GXAmiPropertyTemplate).TemplateVersion = version;
                                 if (categoryTemplateID != 0)
                                 {
@@ -365,15 +361,15 @@ namespace GuruxAMI.Service
                                 {
                                     throw new ArgumentOutOfRangeException("Parent ID.");
                                 }
-                                (it[1] as GXAmiPropertyTemplate).Id += DeviceProfilesID << 16;
+                                (it[1] as GXAmiPropertyTemplate).Id += DeviceProfileID << 16;
                             }
                             else if (it[1] is GXAmiParameterTemplate)
                             {
-                                (it[1] as GXAmiParameterTemplate).DeviceID = DeviceProfilesID;
+                                (it[1] as GXAmiParameterTemplate).DeviceID = DeviceProfileID;
                                 (it[1] as GXAmiParameterTemplate).TemplateVersion = version;
                                 if (it[0] is GXAmiDeviceProfile)
                                 {
-                                    (it[1] as GXAmiParameterTemplate).ParentID = DeviceProfilesID << 16;
+                                    (it[1] as GXAmiParameterTemplate).ParentID = DeviceProfileID << 16;
                                 }
                                 else if (it[0] is GXAmiCategoryTemplate)
                                 {
@@ -397,11 +393,11 @@ namespace GuruxAMI.Service
                                 ulong value = (ulong)Db.LastInsertId();
 #endif                                                                   
                                 (it[1] as GXAmiDeviceProfile).Id = value;
-                                DeviceProfilesID = value;
+                                DeviceProfileID = value;
                                 //Update allowed media types.
                                 foreach (GXAmiMediaType mt in (it[1] as GXAmiDeviceProfile).AllowedMediaTypes)
                                 {
-                                    mt.DeviceProfileId = DeviceProfilesID;
+                                    mt.DeviceProfileId = DeviceProfileID;
                                     Db.Insert(mt);
                                 }
                             }
@@ -425,6 +421,7 @@ namespace GuruxAMI.Service
 #endif
                                     foreach (GXAmiValueItem vi in (it[1] as GXAmiPropertyTemplate).Values)
                                     {
+                                        vi.ProfileId = DeviceProfileID;
                                         vi.PropertyId = value;
                                         Db.Insert(vi);
                                     }
@@ -441,6 +438,7 @@ namespace GuruxAMI.Service
 #endif
                                     foreach (GXAmiValueItem vi in (it[1] as GXAmiParameterTemplate).Values)
                                     {
+                                        vi.ProfileId = DeviceProfileID;
                                         vi.ParameterId = value;
                                         Db.Insert(vi);
                                     }
@@ -448,11 +446,11 @@ namespace GuruxAMI.Service
                             }
                         }
                         //Save device template to data blocks.
-                        foreach (GXAmiDeviceProfilesDataBlock it in SplitDataToPackets(DeviceProfilesID, filename))
+                        foreach (GXAmiDeviceProfilesDataBlock it in SplitDataToPackets(DeviceProfileID, filename))
                         {
                             Db.Insert(it);
                         }
-                        foreach (GXAmiDeviceProfilesDataBlock it in SplitDataToPackets(DeviceProfilesID, filename))
+                        foreach (GXAmiDeviceProfilesDataBlock it in SplitDataToPackets(DeviceProfileID, filename))
                         {
                             Db.Insert(it);
                         }
@@ -461,7 +459,7 @@ namespace GuruxAMI.Service
                             foreach (long ugId in request.UserGroups)
                             {
                                 GXAmiUserGroupDeviceProfile it = new GXAmiUserGroupDeviceProfile();
-                                it.DeviceProfileID = DeviceProfilesID;
+                                it.DeviceProfileID = DeviceProfileID;
                                 it.UserGroupID = ugId;
                                 Db.Insert(it);
                             }
@@ -664,11 +662,12 @@ namespace GuruxAMI.Service
                 foreach (GXAmiDeviceProfile it in list)
                 {
                     it.AllowedMediaTypes = Db.Select<GXAmiMediaType>(q => q.DeviceProfileId == it.Id).ToArray();
-                    it.Parameters = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == it.Id << 16).ToArray();
+                    List<GXAmiParameterTemplate> list2 = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == it.Id << 16);
+                    it.Parameters = list2.ConvertAll<GXAmiParameter>(new Converter<GXAmiParameterTemplate, GXAmiParameter>(p => p.ToParameter())).ToArray();
                     //Get possible values for the parameter.
-                    foreach (GXAmiParameterTemplate param in it.Parameters)
+                    foreach (GXAmiParameter param in it.Parameters)
                     {
-                        param.Values = Db.Select<GXAmiValueItem>(q => q.ParameterId == param.Id).ToArray();
+                        param.Values = Db.Select<GXAmiValueItem>(q => q.ParameterId == param.TemplateId).ToArray();
                     }
                 }
                 return new GXDeviceProfilesResponse(list.ToArray());
@@ -745,12 +744,8 @@ namespace GuruxAMI.Service
                     dev.Guid = Guid.NewGuid();
                     dev.Id = 0;
                     dev.ProfileId = id;
-                    dev.Parameters = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == id << 16).ToArray();
-                    //Reset parameter IDs.
-                    foreach (GXAmiParameter p in dev.Parameters)
-                    {
-                        p.Id = 0;
-                    }
+                    List<GXAmiParameterTemplate> list = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == id << 16);
+                    dev.Parameters = list.ConvertAll<GXAmiParameter>(new Converter<GXAmiParameterTemplate, GXAmiParameter>(p => p.ToParameter())).ToArray();
                     devices.Add(dev);
                 }
                 return new GXCreateDeviceResponse(devices.ToArray());

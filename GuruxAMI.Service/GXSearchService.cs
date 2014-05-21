@@ -53,7 +53,7 @@ namespace GuruxAMI.Service
     /// </summary>
     [Authenticate]
 #if !SS4
-    internal class GXSearchService : ServiceStack.ServiceInterface.Service
+    internal class GXSearchService : GXService
 #else
     internal class GXSearchService : ServiceStack.Service
 #endif
@@ -76,6 +76,16 @@ namespace GuruxAMI.Service
                 if ((request.Target & ActionTargets.DataCollector) != 0)
                 {
                     List<GXAmiDataCollector> list = GXDataCollectorService.GetDataCollectorsByUser(s, Db, 0, 0, false, request.Texts, request.Operator, request.Type);
+                    target.AddRange(list.ToArray());
+                }                
+                if ((request.Target & ActionTargets.User) != 0)
+                {
+                    List<GXAmiUser> list = GXUserService.GetUsers(s, Db, 0, 0, false, true, request.Texts, request.Operator, request.Type);
+                    target.AddRange(list.ToArray());
+                }
+                if ((request.Target & ActionTargets.UserGroup) != 0)
+                {
+                    List<GXAmiUserGroup> list = GXUserGroupService.GetUserGroups(Db, 0, request.Texts, request.Operator, request.Type);
                     target.AddRange(list.ToArray());
                 }
                 GXSearchResponse res = new GXSearchResponse(target.ToArray());

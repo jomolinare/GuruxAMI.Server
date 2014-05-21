@@ -56,11 +56,7 @@ namespace GuruxAMI.Service
     /// Service handles event functionality.
     /// </summary>
 	[Authenticate]
-#if !SS4
-    internal class GXEventsService : ServiceStack.ServiceInterface.Service
-#else
-    internal class GXEventsService : ServiceStack.Service
-#endif
+    internal class GXEventsService : GXService
 	{
         /// <summary>
         /// Stop listen events.
@@ -69,7 +65,7 @@ namespace GuruxAMI.Service
         /// <returns></returns>
         public GXEventsUnregisterResponse Put(GXEventsUnregisterRequest request)
         {            
-            if (request.ListenerGuid.Equals(Guid.Empty))
+            if (request.Instance.Equals(Guid.Empty))
             {
                 throw new Exception("Guid is empty.");
             }        
@@ -84,7 +80,7 @@ namespace GuruxAMI.Service
                 }
             }
             AppHost host = this.ResolveService<AppHost>();
-            host.RemoveEvent(request.ListenerGuid, request.DataCollectorGuid);
+            host.RemoveEvent(request.Instance, request.DataCollectorGuid);
             if (guid != Guid.Empty)
             {
                 //Notify that DC is disconnected.
@@ -108,7 +104,8 @@ namespace GuruxAMI.Service
         /// <returns></returns>
         public GXEventsRegisterResponse Post(GXEventsRegisterRequest request)
         {
-            if (request.SessionListener.Equals(Guid.Empty))
+            if (request.SessionListener.Equals(Guid.Empty) ||
+                request.Instance.Equals(Guid.Empty))
             {
                 throw new Exception("Listener Guid is empty.");
             }
@@ -142,23 +139,23 @@ namespace GuruxAMI.Service
                 lock (Db)
                 {
                     GXAmiSystemError e = new GXAmiSystemError(1, ActionTargets.SystemError, Actions.State, new Exception("Data collector already exists."));
-                    Db.Insert(e);
+                    Db.Insert<GXAmiSystemError>(e);
                     events.Add(new GXEventsItem(ActionTargets.SystemError, Actions.Add, e));
-                }                                               
+                }
             }
             ulong mask = (ulong)(((int)request.Targets << 16) | (int)request.Actions);
             GXEvent e1 = new GXEvent(id, superAdmin, guid, request.Instance, mask);
             host.AddEvent(request.SessionListener, e1);
             if (guid != Guid.Empty)
-            {                
+            {
                 //Notify that DC is connected.
                 lock (Db)
-                {                    
+                {
                     GXAmiDataCollector dc = Db.Select<GXAmiDataCollector>(q => q.Guid == guid)[0];
                     dc.State = Gurux.Device.DeviceStates.Connected;
                     Db.UpdateOnly(dc, p => p.StatesAsInt, p => p.Id == dc.Id);
                     events.Add(new GXEventsItem(ActionTargets.DataCollector, Actions.State, dc));
-                }                                
+                }
                 host.SetEvents(Db, this.Request, 0, events);
             }
             return new GXEventsRegisterResponse();

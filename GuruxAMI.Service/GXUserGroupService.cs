@@ -54,11 +54,7 @@ namespace GuruxAMI.Service
     /// Handles user group add, remove and update services.
     /// </summary>
     [Authenticate]
-#if !SS4
-    internal class GXUserGroupService : ServiceStack.ServiceInterface.Service
-#else
-    internal class GXUserGroupService : ServiceStack.Service
-#endif    
+    internal class GXUserGroupService : GXService
 	{
         /// <summary>
         /// Add or update new user group.
@@ -308,6 +304,46 @@ namespace GuruxAMI.Service
             query += string.Format("WHERE " + GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroup>(Db) + ".Removed IS NULL AND " + GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroupUser>(Db) + ".Removed IS NULL AND UserID = {0}", userId);
             var rows = Db.Select<GXAmiUserGroup>(query);
             return rows.ConvertAll(x => x.Id).ToArray();
+        }
+
+        /// <summary>
+        /// Search user groups that user can access.
+        /// </summary>
+        /// <param name="userId"></param>
+        /// <param name="userGroupId"></param>
+        /// <returns></returns>
+        static public List<GXAmiUserGroup> GetUserGroups(IDbConnection Db, long userId, string[] search, SearchOperator searchOperator, SearchType searchType)
+        {
+            string query = "SELECT " + GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroup>(Db) + ".* FROM " + GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroup>(Db);
+            query += "INNER JOIN " + GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroupUser>(Db) + " ON " + GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroupUser>(Db) + ".UserGroupID = " + GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroup>(Db) + ".ID ";
+            query += string.Format("WHERE " + GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroup>(Db) + ".Removed IS NULL AND " + GuruxAMI.Server.AppHost.GetTableName<GXAmiUserGroupUser>(Db) + ".Removed IS NULL AND UserID = {0}", userId);
+
+            if (search != null)
+            {
+                List<string> searching = new List<string>();
+                List<string> Filter = new List<string>();
+                foreach (string it in search)
+                {
+                    if ((searchType & SearchType.Name) != 0)
+                    {
+                        string tmp = string.Format("{0}.Name Like('%{1}%')",
+                            GuruxAMI.Server.AppHost.GetTableName<GXAmiUser>(Db), it);
+                        searching.Add(tmp);
+                    }
+                }
+                if ((searchOperator & SearchOperator.And) != 0)
+                {
+                    Filter.Add("(" + string.Join(" AND ", searching.ToArray()) + ")");
+                }
+                if ((searchOperator & SearchOperator.Or) != 0)
+                {
+                    Filter.Add("(" + string.Join(" OR ", searching.ToArray()) + ")");
+                }
+                query += string.Join(" AND ", Filter.ToArray());
+            }
+
+            List<GXAmiUserGroup> rows = Db.Select<GXAmiUserGroup>(query);
+            return rows;
         }
 
         List<GXAmiUserGroup> GetUserGroups(long userId, bool removed)

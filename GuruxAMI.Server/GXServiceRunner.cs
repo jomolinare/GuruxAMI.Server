@@ -40,6 +40,7 @@ using ServiceStack.OrmLite;
 using ServiceStack.ServiceHost;
 using ServiceStack.ServiceInterface;
 using ServiceStack.WebHost.Endpoints;
+using System.Net.Mail;
 #else
 using ServiceStack;
 using ServiceStack.Host;
@@ -61,7 +62,6 @@ namespace GuruxAMI.Server
         {
 
         }
-
 #if !SS4
         public override void OnBeforeExecute(IRequestContext requestContext, TRequest request)
 #else
@@ -207,7 +207,7 @@ namespace GuruxAMI.Server
                 throw new Exception("Invalid target.");
             }
             return list;
-        }       
+        }        
 
         /// <summary>
         /// Save exceptions.
@@ -225,6 +225,14 @@ namespace GuruxAMI.Server
             //Do not handle connection close exceptions.
             if (ex is System.Net.WebException && (ex as System.Net.WebException).Status != System.Net.WebExceptionStatus.ConnectionClosed)
             {
+                try
+                {
+                    GuruxAMI.Server.AppHost.ReportError(ex);
+                }
+                catch (Exception ex2)
+                {
+                    System.Diagnostics.Debug.WriteLine(ex2.Message);
+                }
                 try
                 {
                     if (!System.Diagnostics.EventLog.SourceExists("GuruxAMI"))

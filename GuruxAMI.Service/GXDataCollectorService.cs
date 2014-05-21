@@ -49,11 +49,7 @@ using ServiceStack.Auth;
 namespace GuruxAMI.Service
 {
     [Authenticate]
-#if !SS4
-    internal class GXDataCollectorService : ServiceStack.ServiceInterface.Service
-#else
-    internal class GXDataCollectorService : ServiceStack.Service
-#endif    
+    internal class GXDataCollectorService : GXService
     {
         /// <summary>
         /// Add new data collector.

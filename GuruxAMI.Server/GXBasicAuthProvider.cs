@@ -142,9 +142,9 @@ namespace GuruxAMI.Server
         public override bool TryAuthenticate(IServiceBase authService, string userName, string password)
         {
             GXAmiUser user;
-            IDbConnectionFactory f = authService.TryResolve<IDbConnectionFactory>();
+            OrmLiteConnectionFactory f = authService.TryResolve<IDbConnectionFactory>() as OrmLiteConnectionFactory;                                    
             //Connection factory is null when we are configure server at first time.
-            if (f == null)
+            if (f == null || f.ConnectionString == null)
             {
                 return true;
             }
@@ -274,6 +274,7 @@ namespace GuruxAMI.Server
             }            
             catch (Exception ex)
             {
+                GuruxAMI.Server.AppHost.ReportError(ex);
                 try
                 {
                     if (!System.Diagnostics.EventLog.SourceExists("GuruxAMI"))

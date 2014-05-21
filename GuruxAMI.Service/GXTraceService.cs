@@ -54,11 +54,7 @@ namespace GuruxAMI.Service
     /// Service handles trace functionality.
     /// </summary>
     [Authenticate]
-#if !SS4
-    internal class GXTraceService : ServiceStack.ServiceInterface.Service
-#else
-    internal class GXTraceService : ServiceStack.Service
-#endif    
+    internal class GXTraceService : GXService
     {        
         /// <summary>
         /// Update trace level for selected devices or Data Collectors.

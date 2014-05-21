@@ -53,11 +53,7 @@ namespace GuruxAMI.Service
     /// Service handles Schedule functionality.
     /// </summary>
 	[Authenticate]
-#if !SS4
-    internal class GXScheduleService : ServiceStack.ServiceInterface.Service
-#else
-    internal class GXScheduleService : ServiceStack.Service
-#endif
+    internal class GXScheduleService : GXService
 	{
         /// <summary>
         /// Schedule is added or edit.
@@ -348,9 +344,13 @@ namespace GuruxAMI.Service
                     {
                         throw new Exception("Unknown schedule.");
                     }
-                    if (request.Action == Gurux.Device.ScheduleState.Start)
+                    if (request.Action == Gurux.Device.ScheduleState.Run)
                     {
                         list[0].Status = Gurux.Device.ScheduleState.Run;
+                    }
+                    if (request.Action == Gurux.Device.ScheduleState.Start)
+                    {
+                        list[0].Status = Gurux.Device.ScheduleState.Start;
                     }
                     else if (request.Action == Gurux.Device.ScheduleState.TaskStart)
                     {
@@ -368,7 +368,6 @@ namespace GuruxAMI.Service
                     {
                         System.Diagnostics.Debug.Assert(false);
                     }
-                    
                     events.Add(new GXEventsItem(ActionTargets.Schedule, Actions.State, list[0]));
                 }
             }

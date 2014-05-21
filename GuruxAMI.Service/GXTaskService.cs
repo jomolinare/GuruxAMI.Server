@@ -55,11 +55,7 @@ namespace GuruxAMI.Service
     /// Service handles Task functionality.
     /// </summary>
     [Authenticate]
-#if !SS4
-    internal class GXTaskService : ServiceStack.ServiceInterface.Service
-#else
-    internal class GXTaskService : ServiceStack.Service
-#endif
+    internal class GXTaskService : GXService
     {
         /// <summary>
         /// Can user, add or remove users.
@@ -163,7 +159,14 @@ namespace GuruxAMI.Service
                     }
                     //TODO: Check that user has access to the target.                
                     it.State = TaskState.Pending;
-                    it.UserID = adderId;
+                    if (adderId != 0)
+                    {
+                        it.UserID = adderId;
+                    }
+                    else
+                    {
+                        it.UserID = null;
+                    }
                     it.CreationTime = DateTime.Now;
                     it.SenderDataCollectorGuid = dcGuid;
                     UpdateTaskTarget(it);
@@ -238,9 +241,9 @@ namespace GuruxAMI.Service
                 {
                     task.SenderAsString = Db.GetById<GXAmiDevice>(task.TargetID).Name;
                 }
-                else if (task.UserID != 0)
+                else if (task.UserID != null)
                 {
-                    task.SenderAsString = Db.GetById<GXAmiUser>(task.UserID).Name;
+                    task.SenderAsString = Db.GetById<GXAmiUser>(task.UserID.Value).Name;
                 }
                 else if (task.TargetID != 0 && (task.TargetType == TargetType.DataCollector || task.TargetType == TargetType.Media))
                 {
@@ -259,9 +262,9 @@ namespace GuruxAMI.Service
                 {
                     task.TargetAsString = Db.GetById<GXAmiDataCollector>(task.TargetID).Name;
                 }
-                else if (task.UserID != 0)
+                else if (task.UserID != null)
                 {
-                    task.TargetAsString = Db.GetById<GXAmiUser>(task.UserID).Name;
+                    task.TargetAsString = Db.GetById<GXAmiUser>(task.UserID.Value).Name;
                 }
             }
             
@@ -399,7 +402,7 @@ namespace GuruxAMI.Service
                             {
                                 if (it2.DataCollectorId == null || it2.DataCollectorId == collector.Id)
                                 {
-                                    info.MediaSettings.Add(new KeyValuePair<string, string>(it2.Name, it2.Settings));
+                                    info.MediaSettings.Add(new KeyValuePair<string, KeyValuePair<string, string>>(it2.Name, new KeyValuePair<string, string>(it2.Name, it2.Settings)));
                                 }
                             }
                             info.Data = task.Data;
@@ -410,33 +413,39 @@ namespace GuruxAMI.Service
                             GXClaimedTask info = new GXClaimedTask();
                             if (task.TargetType == TargetType.Media)
                             {
-                                if (task.TaskType == TaskType.MediaOpen ||
-                                    task.TaskType == TaskType.MediaClose)
+                                if (task.TaskType == TaskType.MediaOpen)
                                 {
-                                    string[] data = task.Data.Split(new string[] { Environment.NewLine }, StringSplitOptions.None);
+                                    string[] data = task.Data.Split(new string[] { "\r\n" }, StringSplitOptions.None);
                                     info.MediaSettings.Clear();
-                                    info.MediaSettings.Add(new KeyValuePair<string, string>(data[0], data[1]));
+                                    info.MediaSettings.Add(new KeyValuePair<string, KeyValuePair<string, string>>(data[0], new KeyValuePair<string, string>(data[1], data[2])));                                    
+                                    task.Data = null;
+                                }
+                                else if (task.TaskType == TaskType.MediaClose)
+                                {
+                                    string[] data = task.Data.Split(new string[] { "\r\n" }, StringSplitOptions.None);
+                                    info.MediaSettings.Clear();
+                                    info.MediaSettings.Add(new KeyValuePair<string, KeyValuePair<string, string>>(data[0], new KeyValuePair<string, string>(data[1], "")));                                    
                                     task.Data = null;
                                 }
                                 else if (task.TaskType == TaskType.MediaWrite)
                                 {
-                                    string[] data = task.Data.Split(new string[] { Environment.NewLine }, StringSplitOptions.None);
+                                    string[] data = task.Data.Split(new string[] { "\r\n" }, StringSplitOptions.None);
                                     info.MediaSettings.Clear();
-                                    info.MediaSettings.Add(new KeyValuePair<string, string>(data[0], data[1]));
+                                    info.MediaSettings.Add(new KeyValuePair<string, KeyValuePair<string, string>>(data[0], new KeyValuePair<string, string>(data[1], "")));
                                     task.Data = data[2];
                                 }
                                 else if (task.TaskType == TaskType.MediaGetProperty)
                                 {
-                                    string[] data = task.Data.Split(new string[] { Environment.NewLine }, StringSplitOptions.None);
+                                    string[] data = task.Data.Split(new string[] { "\r\n" }, StringSplitOptions.None);
                                     info.MediaSettings.Clear();
-                                    info.MediaSettings.Add(new KeyValuePair<string, string>(data[0], data[1]));
+                                    info.MediaSettings.Add(new KeyValuePair<string, KeyValuePair<string, string>>(data[0], new KeyValuePair<string, string>(data[1], "")));
                                     task.Data = data[2];
                                 }
                                 else if (task.TaskType == TaskType.MediaSetProperty)
                                 {
-                                    string[] data = task.Data.Split(new string[] { Environment.NewLine }, StringSplitOptions.None);
+                                    string[] data = task.Data.Split(new string[] { "\r\n" }, StringSplitOptions.None);
                                     info.MediaSettings.Clear();
-                                    info.MediaSettings.Add(new KeyValuePair<string, string>(data[0], data[1]));
+                                    info.MediaSettings.Add(new KeyValuePair<string, KeyValuePair<string, string>>(data[0], new KeyValuePair<string, string>(data[1], "")));
                                     task.Data = data[2] + Environment.NewLine + data[3];
                                 }
                             }
@@ -578,7 +587,7 @@ namespace GuruxAMI.Service
                             {
                                 throw new ArgumentException("Invalid User Group ID.");
                             }
-                            List<GXAmiUser> users = GXUserService.GetUsers(s, Db, id, ugid, false, true);
+                            List<GXAmiUser> users = GXUserService.GetUsers(s, Db, id, ugid, false, true, null, SearchOperator.None, SearchType.All);
                             foreach (GXAmiUser user in users)
                             {
                                 //Only task creator or super admin can remove tasks.                    
@@ -677,7 +686,7 @@ namespace GuruxAMI.Service
 #else
                                     SqlExpression<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTaskLog>();
 #endif                                                                                                    
-                                    ev.Where(q => q.TargetDeviceID.Value == dId && q.State == request.State);
+                                    ev.Where(q => q.TargetDeviceID == dId && q.State == request.State);
                                     if (request.Descending)
                                     {
                                         ev.OrderByDescending(q => q.Id);
@@ -691,7 +700,7 @@ namespace GuruxAMI.Service
 #else
                                     SqlExpression<GXAmiTask> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTask>();
 #endif                                                                                                    
-                                    ev.Where(q => q.TargetDeviceID.Value == dId && q.State == request.State);
+                                    ev.Where(q => q.TargetDeviceID == dId && q.State == request.State);
                                     if (request.Descending)
                                     {
                                         ev.OrderByDescending(q => q.Id);
@@ -708,7 +717,7 @@ namespace GuruxAMI.Service
 #else
                                     SqlExpression<GXAmiTaskLog> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTaskLog>();
 #endif                                                                
-                                    ev.Where(q => q.TargetDeviceID.Value == dId);
+                                    ev.Where(q => q.TargetDeviceID == dId);
                                     if (request.Descending)
                                     {
                                         ev.OrderByDescending(q => q.Id);
@@ -722,7 +731,7 @@ namespace GuruxAMI.Service
 #else
                                     SqlExpression<GXAmiTask> ev = OrmLiteConfig.DialectProvider.SqlExpression<GXAmiTask>();
 #endif
-                                    ev.Where(q => q.TargetDeviceID.Value == dId);
+                                    ev.Where(q => q.TargetDeviceID == dId);
                                     if (request.Descending)
                                     {
                                         ev.OrderByDescending(q => q.Id);
@@ -1109,7 +1118,7 @@ namespace GuruxAMI.Service
                 {
                     foreach (long ugid in request.UserGroupIDs)
                     {
-                        List<GXAmiUser> users = GXUserService.GetUsers(s, Db, id, ugid, false, true);
+                        List<GXAmiUser> users = GXUserService.GetUsers(s, Db, id, ugid, false, true, null, SearchOperator.None, SearchType.All);
                         foreach (GXAmiUser user in users)
                         {
                             //Only task creator or super admin can remove tasks.                    
@@ -1131,13 +1140,35 @@ namespace GuruxAMI.Service
                 {
                     foreach (ulong did in request.DeviceIDs)
                     {
-                        list.AddRange(Db.Select<GXAmiTask>(q => q.TargetDeviceID.Value == did));
+                        list.AddRange(Db.Select<GXAmiTask>(q => q.TargetDeviceID == did));
                     }
                 }
 
                 //Delete tasks from the device groups.
                 if (request.DeviceGroupIDs != null)
                 {
+                    //TODO:
+                }
+                if (request.DataCollectorIDs != null && request.DataCollectorIDs.Length != 0)
+                {       
+                    string query;
+                    for(int pos = 0; pos != request.DataCollectorIDs.Length; ++pos)                    
+                    {
+                        if (string.IsNullOrEmpty(request.Names[pos]))
+                        {
+                            query = string.Format("SELECT * FROM {0} WHERE DataCollectorID = {1}",
+                                    GuruxAMI.Server.AppHost.GetTableName<GXAmiTask>(Db), 
+                                    request.DataCollectorIDs[pos]);
+                        }
+                        else
+                        {
+                            query = string.Format("SELECT * FROM {0} WHERE DataCollectorID = {1} AND 'Data' like('%{2}%')",
+                                    GuruxAMI.Server.AppHost.GetTableName<GXAmiTask>(Db), 
+                                    request.DataCollectorIDs[pos], 
+                                    request.Names[pos]);
+                        }
+                        list.AddRange(Db.Select<GXAmiTask>(query));
+                    }
                 }
                 using (var trans = Db.OpenTransaction(IsolationLevel.ReadCommitted))
                 {                    

@@ -52,11 +52,7 @@ namespace GuruxAMI.Service
     /// Service handles action functionality.
     /// </summary>
 	[Authenticate]
-#if !SS4
-    internal class GXManagementService : ServiceStack.ServiceInterface.Service
-#else
-    internal class GXManagementService : ServiceStack.Service
-#endif    
+    internal class GXManagementService : GXService
 	{
         public static string GetMACAddress()
         {
@@ -135,7 +131,7 @@ namespace GuruxAMI.Service
                     CreateTable<GXAmiVisualizer>(Db, ref index, progress);
                     //Do not change settings values because they are unique.
                     Db.Insert(new GXAmiSettings("DeviceID", "0"));
-                    Db.Insert(new GXAmiSettings("Version", "5"));
+                    Db.Insert(new GXAmiSettings("Version", "6"));
                     if (progress != null)
                     {
                         progress(++index, 40);
@@ -202,15 +198,15 @@ namespace GuruxAMI.Service
             Db.DropTable<GXAmiUserGroupDeviceProfile>();
             Db.DropTable<GXAmiUserGroupUser>();
             Db.DropTable<GXAmiUserGroupDeviceGroup>();
-            Db.DropTable<GXAmiDeviceGroupDevice>();            
-            Db.DropTable<GXAmiValueItem>();
-            Db.DropTable<GXAmiParameterTemplate>();
+            Db.DropTable<GXAmiDeviceGroupDevice>();                                    
             Db.DropTable<GXAmiDeviceProfilesDataBlock>();            
             Db.DropTable<GXAmiCategoryTemplate>();
             Db.DropTable<GXAmiCategory>();            
             Db.DropTable<GXAmiDataRow>();
             Db.DropTable<GXAmiDataTableTemplate>();
-            Db.DropTable<GXAmiDataTable>();            
+            Db.DropTable<GXAmiDataTable>();                        
+            Db.DropTable<GXAmiValueItem>();
+            Db.DropTable<GXAmiParameterTemplate>();
             Db.DropTable<GXAmiPropertyTemplate>();
             Db.DropTable<GXAmiProperty>();
             Db.DropTable<GXAmiUserActionLog>();
@@ -218,23 +214,23 @@ namespace GuruxAMI.Service
             Db.DropTable<GXAmiDeviceError>();
             Db.DropTable<GXAmiUserActionLog>();
             Db.DropTable<GXAmiSettings>();
-            Db.DropTable<GXAmiDeviceGroup>();            
-            Db.DropTable<GXAmiUser>();
+            Db.DropTable<GXAmiDeviceGroup>();                        
             Db.DropTable<GXAmiUserGroup>();
             Db.DropTable<GXAmiTaskData>();
             Db.DropTable<GXAmiTaskLogData>();
-            Db.DropTable<GXAmiTask>();
+            Db.DropTable<GXAmiTask>();            
             Db.DropTable<GXAmiTaskLog>();
+            Db.DropTable<GXAmiUser>();
             Db.DropTable<GXAmiParameter>();
             Db.DropTable<GXAmiLatestValue>();
             Db.DropTable<GXAmiValueLog>();
             Db.DropTable<GXAmiMediaType>();
-            Db.DropTable<GXAmiDevice>();
-            Db.DropTable<GXAmiDeviceProfile>();            
+            Db.DropTable<GXAmiDevice>();            
+            Db.DropTable<GXAmiScheduleTarget>();            
+            Db.DropTable<GXAmiDataCollectorParameter>();            
             Db.DropTable<GXAmiSchedule>();
-            Db.DropTable<GXAmiScheduleTarget>();
-            Db.DropTable<GXAmiDataCollectorParameter>();
             Db.DropTable<GXAmiDataCollector>();
+            Db.DropTable<GXAmiDeviceProfile>();
         }
 
         /// <summary>
@@ -287,8 +283,9 @@ namespace GuruxAMI.Service
         /// </summary>
         public GXIsDatabaseCreatedResponse Post(GXIsDatabaseCreatedRequest request)
 		{
-            IDbConnectionFactory f = this.TryResolve<IDbConnectionFactory>();
-            if (f == null)
+            OrmLiteConnectionFactory f = this.TryResolve<IDbConnectionFactory>() as OrmLiteConnectionFactory;                        
+            //Connection factory is null when we are configure server at first time.
+            if (f == null || f.ConnectionString == null)
             {
                 return new GXIsDatabaseCreatedResponse(false);
             }

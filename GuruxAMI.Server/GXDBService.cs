@@ -135,71 +135,81 @@ namespace GuruxAMI.Server
         /// </summary>
         public void Update()
         {
-            
-            using (IDbConnection Db = this.appHost.TryResolve<IDbConnectionFactory>().OpenDbConnection())                
+            OrmLiteConnectionFactory f = this.appHost.TryResolve<IDbConnectionFactory>() as OrmLiteConnectionFactory;
+            if (f.ConnectionString != null)
             {
-                if (!GuruxAMI.Service.GXManagementService.IsDatabaseCreated(Db))
+                using (IDbConnection Db = f.OpenDbConnection())
                 {
-                    return;
-                }
-                List<GXAmiSettings> tmp = Db.Select<GXAmiSettings>(q => q.Name == "Version");
-                int version = 0;
-                if (tmp.Count == 1)
-                {
-                    version = Convert.ToInt32(tmp[0].Value);
-                }
-                else if (tmp.Count != 0)
-                {
-                    throw new Exception("Invalid version.");
-                }                
-                if (version == 0)
-                {
-                    Db.ExecuteSql("ALTER TABLE Device ADD TraceLevel int(11) AFTER TimeStamp");
-                    Db.ExecuteSql("ALTER TABLE DataCollector ADD TraceLevel int(11) AFTER UnAssigned");
+                    if (!GuruxAMI.Service.GXManagementService.IsDatabaseCreated(Db))
+                    {
+                        return;
+                    }
+                    List<GXAmiSettings> tmp = Db.Select<GXAmiSettings>(q => q.Name == "Version");
+                    int version = 0;
+                    if (tmp.Count == 1)
+                    {
+                        version = Convert.ToInt32(tmp[0].Value);
+                    }
+                    else if (tmp.Count != 0)
+                    {
+                        throw new Exception("Invalid version.");
+                    }
+                    if (version == 0)
+                    {
+                        Db.ExecuteSql("ALTER TABLE Device ADD TraceLevel int(11) AFTER TimeStamp");
+                        Db.ExecuteSql("ALTER TABLE DataCollector ADD TraceLevel int(11) AFTER UnAssigned");
 
-                    Db.ExecuteSql("ALTER TABLE Settings MODIFY COLUMN ID int(4) auto_increment");
-                    //Drop device foreign key from task and task log tables.                    
-                    Db.ExecuteSql("ALTER TABLE DeviceError ADD DataCollectorID bigint(20) AFTER TargetDeviceID");
-                    //Drop device foreign key from device error. Taskista tämä...                    
-                    Db.ExecuteSql("ALTER TABLE DeviceError DROP FOREIGN KEY FK_DeviceError_Task_TaskID");
-                    //Drop device foreign key from task and task log tables.                    
-                    Db.ExecuteSql("ALTER TABLE Task DROP FOREIGN KEY FK_Task_Device_TargetDeviceID");
-                    Db.ExecuteSql("ALTER TABLE TaskLog DROP FOREIGN KEY FK_TaskLog_Device_TargetDeviceID");
-                    //Create DC errors table.
-                    Db.CreateTable<GXAmiDataCollectorError>(false);
-                    Db.CreateTable<GXAmiTaskData>(false);
-                    Db.CreateTable<GXAmiTrace>(false);
-                    Db.CreateTable<GXAmiTraceData>(false);
-                    Db.Insert(new GXAmiSettings("Version", "1"));
-                }
-                if (version == 1)
-                {
-                    Db.CreateTable<GXAmiVisualizer>(false);
-                    Db.CreateTable<GXAmiDeviceMedia>(false);                  
-                    tmp[0].Value = "2";
-                    Db.Update<GXAmiSettings>(tmp[0]);
-                }
-                if (version <= 2)
-                {
-                    Db.ExecuteSql("ALTER TABLE DeviceMedia ADD Disabled boolean AFTER Settings");
-                    tmp[0].Value = "3";
-                    Db.Update<GXAmiSettings>(tmp[0]);
-                }
-                if (version <= 3)
-                {
-                    Db.ExecuteSql("ALTER TABLE Task ADD ReplyID bigint(20) AFTER ID");
-                    Db.ExecuteSql("ALTER TABLE TaskLog ADD ReplyID bigint(20) AFTER ID");                    
-                    tmp[0].Value = "4";
-                    Db.Update<GXAmiSettings>(tmp[0]);
-                }
-                if (version <= 4)
-                {
-                    Db.ExecuteSql("ALTER TABLE Schedule ADD Status int(4)");
-                    Db.ExecuteSql("ALTER TABLE Schedule ADD NextRunTine datetime AFTER ScheduleEndTime");
-                    Db.ExecuteSql("ALTER TABLE Schedule ADD LastRunTime datetime AFTER NextRunTine");
-                    Db.ExecuteSql("ALTER TABLE DeviceMedia MODIFY DataCollectorId bigint(20) NULL");                
-                    tmp[0].Value = "5";
-                    Db.Update<GXAmiSettings>(tmp[0]);
+                        Db.ExecuteSql("ALTER TABLE Settings MODIFY COLUMN ID int(4) auto_increment");
+                        //Drop device foreign key from task and task log tables.                    
+                        Db.ExecuteSql("ALTER TABLE DeviceError ADD DataCollectorID bigint(20) AFTER TargetDeviceID");
+                        //Drop device foreign key from device error. Taskista tämä...                    
+                        Db.ExecuteSql("ALTER TABLE DeviceError DROP FOREIGN KEY FK_DeviceError_Task_TaskID");
+                        //Drop device foreign key from task and task log tables.                    
+                        Db.ExecuteSql("ALTER TABLE Task DROP FOREIGN KEY FK_Task_Device_TargetDeviceID");
+                        Db.ExecuteSql("ALTER TABLE TaskLog DROP FOREIGN KEY FK_TaskLog_Device_TargetDeviceID");
+                        //Create DC errors table.
+                        Db.CreateTable<GXAmiDataCollectorError>(false);
+                        Db.CreateTable<GXAmiTaskData>(false);
+                        Db.CreateTable<GXAmiTrace>(false);
+                        Db.CreateTable<GXAmiTraceData>(false);
+                        Db.Insert(new GXAmiSettings("Version", "1"));
+                    }
+                    if (version == 1)
+                    {
+                        Db.CreateTable<GXAmiVisualizer>(false);
+                        Db.CreateTable<GXAmiDeviceMedia>(false);
+                        tmp[0].Value = "2";
+                        Db.Update<GXAmiSettings>(tmp[0]);
+                    }
+                    if (version <= 2)
+                    {
+                        Db.ExecuteSql("ALTER TABLE DeviceMedia ADD Disabled boolean AFTER Settings");
+                        tmp[0].Value = "3";
+                        Db.Update<GXAmiSettings>(tmp[0]);
+                    }
+                    if (version <= 3)
+                    {
+                        Db.ExecuteSql("ALTER TABLE Task ADD ReplyID bigint(20) AFTER ID");
+                        Db.ExecuteSql("ALTER TABLE TaskLog ADD ReplyID bigint(20) AFTER ID");
+                        tmp[0].Value = "4";
+                        Db.Update<GXAmiSettings>(tmp[0]);
+                    }
+                    if (version <= 4)
+                    {
+                        Db.ExecuteSql("ALTER TABLE Schedule ADD Status int(4)");
+                        Db.ExecuteSql("ALTER TABLE Schedule ADD NextRunTine datetime AFTER ScheduleEndTime");
+                        Db.ExecuteSql("ALTER TABLE Schedule ADD LastRunTime datetime AFTER NextRunTine");
+                        Db.ExecuteSql("ALTER TABLE DeviceMedia MODIFY DataCollectorId bigint(20) NULL");
+                        tmp[0].Value = "5";
+                        Db.Update<GXAmiSettings>(tmp[0]);
+                    }
+                    if (version <= 5)
+                    {
+                        Db.ExecuteSql("ALTER TABLE DeviceError MODIFY DataCollectorId bigint(20) NULL");
+                        Db.ExecuteSql("ALTER TABLE DeviceError MODIFY TargetDeviceID bigint(20) NULL");
+                        tmp[0].Value = "6";
+                        Db.Update<GXAmiSettings>(tmp[0]);
+                    }                    
                 }
             }
         }       

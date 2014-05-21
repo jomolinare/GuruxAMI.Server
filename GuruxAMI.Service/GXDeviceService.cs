@@ -52,11 +52,7 @@ namespace GuruxAMI.Service
     /// Service handles device functionality.
     /// </summary>
 	[Authenticate]
-#if !SS4
-    internal class GXDeviceService : ServiceStack.ServiceInterface.Service
-#else
-    internal class GXDeviceService : ServiceStack.Service
-#endif    
+    internal class GXDeviceService : GXService
 	{
         void UpdateParameters(IDbConnection Db, ulong deviceId, ulong parentId, GXAmiParameter[] parameters, bool insert)
         {
@@ -67,13 +63,9 @@ namespace GuruxAMI.Service
                     if (insert || it.Id == 0)
                     {
                         GXAmiParameter tmp = it;
-                        if (it is GXAmiParameterTemplate)
-                        {
-                            tmp = (it as GXAmiParameterTemplate).ToParameter();
-                        }
                         tmp.DeviceID = deviceId;
                         tmp.ParentID = parentId;
-                        Db.Insert<GXAmiParameter>(tmp);
+                        Db.Insert<GXAmiParameter>(tmp);                        
                     }
                     else
                     {
@@ -139,6 +131,7 @@ namespace GuruxAMI.Service
                         {
                             it.Id = GXAmiSettings.GetNewDeviceID(Db);
                             it.Added = DateTime.Now.ToUniversalTime();
+                            it.ProfileGuid = Db.Select<GXAmiDeviceProfile>(q => q.Id == it.ProfileId)[0].Guid;
                             Db.Insert(it);
                             events.Add(new GXEventsItem(ActionTargets.Device, Actions.Add, it));
                             //Add adder to user group if adder is not super admin.
@@ -219,6 +212,10 @@ namespace GuruxAMI.Service
                         Db.Delete<GXAmiDeviceMedia>(q => q.DeviceId == it.Id);
                         foreach(GXAmiDeviceMedia m in it.Medias)
                         {
+                            if (m.DataCollectorId == 0)
+                            {
+                                m.DataCollectorId = null;
+                            }
                             m.DeviceId = it.Id;
                             Db.Insert<GXAmiDeviceMedia>(m);
                         }
@@ -235,7 +232,8 @@ namespace GuruxAMI.Service
                                 cat.DeviceID = it.Id;
                                 Db.Insert(cat);
                                 categories.Add(cat);
-                                cat.Parameters = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == tmp.Id).ToArray();
+                                List<GXAmiParameterTemplate> list = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == tmp.Id);
+                                cat.Parameters = list.ConvertAll<GXAmiParameter>(new Converter<GXAmiParameterTemplate, GXAmiParameter>(p => p.ToParameter())).ToArray();
                                 UpdateParameters(Db, it.Id, cat.Id, cat.Parameters, true);
                                 GXAmiPropertyTemplate[] tmp23 = Db.Select<GXAmiPropertyTemplate>(q => q.ParentID == tmp.Id).ToArray();
                                 List<GXAmiProperty> properties = new List<GXAmiProperty>();
@@ -245,7 +243,8 @@ namespace GuruxAMI.Service
                                     p.ParentID = cat.Id;
                                     p.DeviceID = it.Id;
                                     Db.Insert(p);
-                                    p.Parameters = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == tmp2.Id).ToArray();
+                                    list = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == tmp2.Id);
+                                    p.Parameters = list.ConvertAll<GXAmiParameter>(new Converter<GXAmiParameterTemplate, GXAmiParameter>(q => q.ToParameter())).ToArray();
                                     UpdateParameters(Db, it.Id, p.Id, p.Parameters, true);
                                     properties.Add(p);
                                 }
@@ -281,7 +280,8 @@ namespace GuruxAMI.Service
                                 table.DeviceID = it.Id;
                                 Db.Insert(table);
                                 tables.Add(table);
-                                table.Parameters = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == tmp.Id).ToArray();
+                                List<GXAmiParameterTemplate> list = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == tmp.Id);
+                                table.Parameters = list.ConvertAll<GXAmiParameter>(new Converter<GXAmiParameterTemplate, GXAmiParameter>(p => p.ToParameter())).ToArray();
                                 UpdateParameters(Db, it.Id, table.Id, table.Parameters, true);
                                 GXAmiPropertyTemplate[] tmp23 = Db.Select<GXAmiPropertyTemplate>(q => q.ParentID == tmp.Id).ToArray();
                                 List<GXAmiProperty> properties = new List<GXAmiProperty>();
@@ -291,7 +291,8 @@ namespace GuruxAMI.Service
                                     p.ParentID = table.Id;
                                     p.DeviceID = it.Id;
                                     Db.Insert(p);
-                                    p.Parameters = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == tmp2.Id).ToArray();
+                                    list = Db.Select<GXAmiParameterTemplate>(q => q.ParentID == tmp2.Id);
+                                    p.Parameters = list.ConvertAll<GXAmiParameter>(new Converter<GXAmiParameterTemplate, GXAmiParameter>(q => q.ToParameter())).ToArray();
                                     UpdateParameters(Db, it.Id, p.Id, p.Parameters, true);
                                     properties.Add(p);
                                 }
@@ -418,57 +419,179 @@ namespace GuruxAMI.Service
             List<GXAmiDevice> list = Db.Select<GXAmiDevice>(query);            
             return list;
         }
-
-        /// <summary>
-        /// Get possible values for the parameters.
-        /// </summary>
-        /// <param name="Db"></param>
-        /// <param name="parameters"></param>
-        static void UpdateParameterValues(IDbConnection Db, GXAmiParameter[] parameters)
+        
+        internal static void UpdateContent(IDbConnection Db, GXAmiDevice device, DeviceContentType content)
         {
-            //Get possible values for the parameter.
-            foreach (GXAmiParameter param in parameters)
-            {
-                param.Values = Db.Select<GXAmiValueItem>(q => q.ParameterId == param.Id).ToArray();
-            }
-        }
-        internal static void UpdateContent(IDbConnection Db, GXAmiDevice it, DeviceContentType content)
-        {
+            string query;
             if (content == DeviceContentType.All)
             {
-                //Get device template id.
-                it.ProfileGuid = Db.Select<GXAmiDeviceProfile>(q => q.Id == it.ProfileId)[0].Guid;
-                it.Parameters = Db.Select<GXAmiParameter>(q => q.ParentID == it.Id).ToArray();
-                UpdateParameterValues(Db, it.Parameters);
-                it.Categories = Db.Select<GXAmiCategory>(q => q.DeviceID == it.Id).ToArray();
-                foreach (GXAmiCategory cat in it.Categories)
+                device.ProfileGuid = Db.Select<GXAmiDeviceProfile>(q => q.Id == device.ProfileId)[0].Guid;
+                SortedList<ulong, object> items = new SortedList<ulong, object>();
+                //Get categories.
+                device.Categories = Db.Select<GXAmiCategory>(q => q.DeviceID == device.Id).ToArray();
+                foreach(GXAmiCategory cat in device.Categories)
                 {
-                    cat.Parameters = Db.Select<GXAmiParameter>(q => q.ParentID == cat.Id).ToArray();
-                    UpdateParameterValues(Db, it.Parameters);
-                    cat.Properties = Db.Select<GXAmiProperty>(q => q.ParentID == cat.Id).ToArray();
-                    foreach (GXAmiProperty p in cat.Properties)
+                    items.Add(cat.Id, cat);
+                }
+                //Get tables.
+                device.Tables = Db.Select<GXAmiDataTable>(q => q.DeviceID == device.Id).ToArray();
+                foreach(GXAmiDataTable table in device.Tables)
+                {
+                    items.Add(table.Id, table);
+                }
+                //Get properties.
+                query = string.Format("SELECT * FROM {0} WHERE DeviceID = {1} ORDER BY ParentID, ID",
+                                                    GuruxAMI.Server.AppHost.GetTableName<GXAmiProperty>(Db),
+                                                    device.Id);
+                List<GXAmiProperty> properties = Db.SqlList<GXAmiProperty>(query);
+                ulong id = 0;
+                List<GXAmiProperty> list = new List<GXAmiProperty>();
+                foreach (GXAmiProperty it in properties)
+                {
+                    //If parent changes.
+                    if (it.ParentID != id)
                     {
-                        p.Parameters = Db.Select<GXAmiParameter>(q => q.ParentID == p.Id).ToArray();
-                        UpdateParameterValues(Db, it.Parameters);
+                        if (id != 0)
+                        {
+                            object target = items[id];
+                            if (target is GXAmiCategory)
+                            {
+                                (target as GXAmiCategory).Properties = list.ToArray();
+                            }
+                            else if (target is GXAmiDataTable)
+                            {
+                                (target as GXAmiDataTable).Columns = list.ToArray();
+                            }
+                        }
+                        id = it.ParentID;
+                        list.Clear();
+                    }
+                    list.Add(it);
+                }
+                if (list.Count != 0 && id != 0)
+                {
+                    object target = items[id];
+                    if (target is GXAmiCategory)
+                    {
+                        (target as GXAmiCategory).Properties = list.ToArray();
+                    }
+                    else if (target is GXAmiDataTable)
+                    {
+                        (target as GXAmiDataTable).Columns = list.ToArray();
                     }
                 }
-                it.Tables = Db.Select<GXAmiDataTable>(q => q.DeviceID == it.Id).ToArray();
-                foreach (GXAmiDataTable table in it.Tables)
+
+                foreach (GXAmiProperty it in properties)
                 {
-                    table.Parameters = Db.Select<GXAmiParameter>(q => q.ParentID == table.Id).ToArray();
-                    UpdateParameterValues(Db, it.Parameters);
-                    table.Columns = Db.Select<GXAmiProperty>(q => q.ParentID == table.Id).ToArray();
-                    foreach (GXAmiProperty p in table.Columns)
+                    items.Add(it.Id, it);
+                }
+                items.Add(device.Id, device);
+                //Get Parameters.                
+                query = string.Format("SELECT * FROM {0} WHERE DeviceID = {1} ORDER BY ParentID, ID",
+                                                    GuruxAMI.Server.AppHost.GetTableName<GXAmiParameter>(Db),
+                                                    device.Id);
+                List<GXAmiParameter> parameters = Db.SqlList<GXAmiParameter>(query);
+                id = 0;
+                List<GXAmiParameter> paramList = new List<GXAmiParameter>();                
+                foreach (GXAmiParameter it in parameters)
+                {
+                    //If parent changes.
+                    if (it.ParentID != id)
                     {
-                        p.Parameters = Db.Select<GXAmiParameter>(q => q.ParentID == p.Id).ToArray();
-                        UpdateParameterValues(Db, it.Parameters);
+                        if (id != 0)
+                        {
+                            object target = items[id];
+                            if (target is GXAmiDevice)
+                            {
+                                (target as GXAmiDevice).Parameters = paramList.ToArray();
+                            }
+                            else if (target is GXAmiCategory)
+                            {
+                                (target as GXAmiCategory).Parameters = paramList.ToArray();
+                            }
+                            else if (target is GXAmiDataTable)
+                            {
+                                (target as GXAmiDataTable).Parameters = paramList.ToArray();
+                            }
+                            else if (target is GXAmiProperty)
+                            {
+                                (target as GXAmiProperty).Parameters = paramList.ToArray();
+                            }
+                            else
+                            {
+                                throw new Exception("Unknown target.");
+                            }
+                        }
+                        id = it.ParentID;
+                        paramList.Clear();
+                    }
+                    paramList.Add(it);
+                }
+                if (paramList.Count != 0 && id != 0)
+                {
+                    object target = items[id];
+                    if (target is GXAmiDevice)
+                    {
+                        (target as GXAmiDevice).Parameters = paramList.ToArray();
+                    } 
+                    else if (target is GXAmiCategory)
+                    {
+                        (target as GXAmiCategory).Parameters = paramList.ToArray();
+                    }
+                    else if (target is GXAmiDataTable)
+                    {
+                        (target as GXAmiDataTable).Parameters = paramList.ToArray();
+                    }
+                    else if (target is GXAmiProperty)
+                    {
+                        (target as GXAmiProperty).Parameters = paramList.ToArray();
+                    }
+                    else
+                    {
+                        throw new Exception("Unknown target.");
                     }
                 }
+                items.Clear();
+                foreach (GXAmiParameter it in parameters)
+                {
+                    items.Add(it.TemplateId, it);
+                }
+                //Get Parameters.                
+                query = string.Format("SELECT * FROM {0} WHERE ProfileId = {1} ORDER BY ParameterId, ID",
+                                                    GuruxAMI.Server.AppHost.GetTableName<GXAmiValueItem>(Db),
+                                                    device.ProfileId);
+                List<GXAmiValueItem> values = Db.SqlList<GXAmiValueItem>(query);
+                id = 0;
+                List<GXAmiValueItem> valueList = new List<GXAmiValueItem>();
+                foreach (GXAmiValueItem it in values)
+                {
+                    //If parent changes.
+                    if (it.ParameterId != null && it.ParameterId != id)
+                    {
+                        if (id != 0)
+                        {
+                            if (items.ContainsKey(id))
+                            {
+                                object target = items[id];
+                                (target as GXAmiParameter).Values = valueList.ToArray();
+                            }
+                            else
+                            {
+                                System.Diagnostics.Debug.WriteLine("Failed to find value item parent: " + it.UIValue);
+                            }
+                        }
+                        id = it.ParameterId.Value;
+                        valueList.Clear();
+                    }
+                    valueList.Add(it);
+                }
+
             }
-            //Get Media settings.            
-            string query = "SELECT * FROM DeviceMedia WHERE DeviceId = " + it.Id.ToString();
+            //Get Media settings.         
+            query = "SELECT * FROM " + GuruxAMI.Server.AppHost.GetTableName<GXAmiDeviceMedia>(Db) + 
+                            " WHERE DeviceId = " + device.Id.ToString();
             List<GXAmiDeviceMedia> list2 = Db.Select<GXAmiDeviceMedia>(query);            
-            it.Medias = list2.ToArray();
+            device.Medias = list2.ToArray();
         }
 
         /// <summary>
@@ -505,10 +628,11 @@ namespace GuruxAMI.Service
                 //Returns all devices that DC can access.
                 else if (request.DataCollectorId != 0)
                 {
-                    string query = string.Format("SELECT DISTINCT {0}.* FROM {0} INNER JOIN {1} ON {0}.ID = {1}.DeviceID WHERE (DataCollectorID IS NULL OR DataCollectorID = {2}) AND Removed IS NULL",
-                    GuruxAMI.Server.AppHost.GetTableName<GXAmiDevice>(Db),
-                    GuruxAMI.Server.AppHost.GetTableName<GXAmiDeviceMedia>(Db),
-                    request.DataCollectorId);
+                    string query = string.Format("SELECT DISTINCT {0}.* FROM {0} INNER JOIN {1} ON {0}.ID = {1}.DeviceID " +
+                                                "WHERE (DataCollectorID IS NULL OR DataCollectorID = {2}) AND Removed IS NULL",
+                                    GuruxAMI.Server.AppHost.GetTableName<GXAmiDevice>(Db),
+                                    GuruxAMI.Server.AppHost.GetTableName<GXAmiDeviceMedia>(Db),
+                                    request.DataCollectorId);
                     list = Db.Select<GXAmiDevice>(query);
                 }
                 //Return all devices.

@@ -60,11 +60,11 @@ namespace GuruxAMI.Server
 		{
 			Assembly.GetExecutingAssembly()
 		})
-        {
+        {            
             if (connectionFactory == null)
             {
                 throw new ArgumentNullException("connectionFactory");
-            }
+            }            
             Prefix = prefix;
             ConnectionFactory = connectionFactory;
         }

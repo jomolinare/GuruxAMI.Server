@@ -53,11 +53,7 @@ namespace GuruxAMI.Service
     /// Service handles action functionality.
     /// </summary>
 	[Authenticate]
-#if !SS4
-    internal class GXActionService : ServiceStack.ServiceInterface.Service
-#else
-    internal class GXActionService : ServiceStack.Service
-#endif    
+    internal class GXActionService : GXService
 	{
 		public GXActionResponse Post(GXActionRequest request)
 		{

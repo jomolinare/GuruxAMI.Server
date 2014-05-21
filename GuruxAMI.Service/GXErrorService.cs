@@ -53,7 +53,7 @@ namespace GuruxAMI.Service
     /// </summary>
 	[Authenticate]
 #if !SS4
-    internal class GXErrorService : ServiceStack.ServiceInterface.Service
+    internal class GXErrorService : GXService
 #else
     internal class GXErrorService : ServiceStack.Service
 #endif    

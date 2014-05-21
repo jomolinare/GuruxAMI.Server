@@ -41,6 +41,7 @@ using ServiceStack.OrmLite;
 #if !SS4
 using ServiceStack.ServiceHost;
 using ServiceStack.Common.Web;
+using System.Net.Mail;
 #else    
 using ServiceStack.Web;
 using ServiceStack;
@@ -72,7 +73,7 @@ namespace GuruxAMI.Server
             }
             return add;
         }                
-#endif
+#endif      
         
         /// <summary>
         /// 
@@ -405,10 +406,11 @@ namespace GuruxAMI.Server
                 task.TargetType == TargetType.Table || task.TargetType == TargetType.Property) &&
                 dataCollectorGuid != Guid.Empty)
             {
-                string query = string.Format("SELECT COUNT(*) FROM {0} WHERE Disabled = FALSE AND DeviceID = {1} AND (DataCollectorId = {2} OR DataCollectorId IS NULL)",
+                string query = string.Format("SELECT COUNT(*) FROM {0} LEFT JOIN {1} ON {0}.DataCollectorId = {1}.ID WHERE Disabled = FALSE AND DeviceID = {2} AND {1}.Guid = '{3}'",
                     GuruxAMI.Server.AppHost.GetTableName<GXAmiDeviceMedia>(Db),
+                    GuruxAMI.Server.AppHost.GetTableName<GXAmiDataCollector>(Db),
                     task.TargetDeviceID,
-                    task.DataCollectorID);
+                    dataCollectorGuid.ToString().Replace("-", ""));
                 lock (Db)
                 {
                     return Db.SqlScalar<long>(query, null) != 0;
@@ -530,6 +532,50 @@ namespace GuruxAMI.Server
         }
 
         /// <summary>
+        /// Send email from occurred error
+        /// </summary>
+        /// <param name="ex"></param>
+        public static void ReportError(Exception ex)
+        {
+            string str = ex.Message + Environment.NewLine;
+            str += "-------------------------------------------------------";
+            str += ex.Source + Environment.NewLine;
+            str += "-------------------------------------------------------";
+            str += ex.StackTrace + Environment.NewLine;
+            str += "-------------------------------------------------------";
+            str += ex.ToString();
+            try
+            {
+                string path = System.IO.Path.Combine(new Uri(System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().GetName().CodeBase)).LocalPath, Guid.NewGuid().ToString() + ".txt");
+                using (System.IO.TextWriter tw = System.IO.File.CreateText(path))
+                {
+                    tw.WriteLine(str);
+                    tw.Close();
+                }
+            }
+            catch(Exception ex2)
+            {
+                System.Diagnostics.Debug.WriteLine(ex2.Message);
+            }
+            try
+            {
+
+                MailMessage mail = new System.Net.Mail.MailMessage();
+                mail.From = new System.Net.Mail.MailAddress("gurux@gurux.org");
+                mail.To.Add("gurux@gurux.org");
+                mail.Subject = "GuruxAMI error has occurred.";
+                SmtpClient smtp = new SmtpClient("smtp.kolumbus.fi");
+                smtp.UseDefaultCredentials = false;
+                mail.Body = str;
+                smtp.Send(mail);
+            }
+            catch (Exception ex2)
+            {
+                System.Diagnostics.Debug.WriteLine(ex2.Message);
+            }
+        }
+
+        /// <summary>
         /// Notify from new device tasks.
         /// </summary>
         /// <param name="Db"></param>
@@ -544,6 +590,7 @@ namespace GuruxAMI.Server
                 {
                     GXAmiTaskLog it = new GXAmiTaskLog(task);
                     Db.Insert<GXAmiTaskLog>(it);
+                    it.Id = (ulong) Db.GetLastInsertId();
                     if (it.Data != null)
                     {
                         foreach (string value in GXTaskService.SplitByLength(it.Data, 255))
@@ -572,7 +619,7 @@ namespace GuruxAMI.Server
             foreach (GXSession it in Sessions)
             {
                 foreach (GXEvent e1 in it.NotifyClients)
-                {
+                {                    
                     if ((mask & e1.Mask) != 0)
                     {
                         //Do not notify task sender.

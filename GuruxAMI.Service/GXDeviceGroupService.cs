@@ -53,11 +53,7 @@ namespace GuruxAMI.Service
     /// Service handles device group functionality.
     /// </summary>
 	[Authenticate]
-#if !SS4
-    internal class GXDeviceGroupService : ServiceStack.ServiceInterface.Service
-#else
-    internal class GXDeviceGroupService : ServiceStack.Service
-#endif
+    internal class GXDeviceGroupService : GXService
 	{
         /// <summary>
         /// Add or update device group.
